@@ -110,3 +110,35 @@ void *BR_RESIDENT_ENTRY HostImageLookupOrdinal(void *img, br_uint_32 ordinal)
 }
 
 #endif
+
+#if defined(N64)
+
+/* Nintendo 64 (libdragon): bare metal, no dynamic loading. Drivers are linked statically. */
+
+void *BR_RESIDENT_ENTRY HostImageLoad(char *name)
+{
+    (void)name;
+    return NULL;
+}
+
+void BR_RESIDENT_ENTRY HostImageUnload(void *image)
+{
+    (void)image;
+}
+
+void *BR_RESIDENT_ENTRY HostImageLookupName(void *img, char *name, br_uint_32 hint)
+{
+    (void)img;
+    (void)name;
+    (void)hint;
+    return NULL;
+}
+
+void *BR_RESIDENT_ENTRY HostImageLookupOrdinal(void *img, br_uint_32 ordinal)
+{
+    (void)img;
+    (void)ordinal;
+    return NULL;
+}
+
+#endif
