@@ -1,5 +1,10 @@
 ﻿add_subdirectory(softrend)
 add_subdirectory(pentprim)
 add_subdirectory(virtual_fb)
-add_subdirectory(glrend)
-target_link_libraries(brender-full INTERFACE softrend pentprim virtual_fb glrend )
+if(DETHRACE_PLATFORM_N64)
+    # No OpenGL on the N64
+    target_link_libraries(brender-full INTERFACE softrend pentprim virtual_fb )
+else()
+    add_subdirectory(glrend)
+    target_link_libraries(brender-full INTERFACE softrend pentprim virtual_fb glrend )
+endif()
