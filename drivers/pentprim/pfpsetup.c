@@ -100,6 +100,26 @@ static int SETUP_FLOAT(brp_vertex *v0, brp_vertex *v1, brp_vertex *v2)
     ecx.ptr_v = v1;
     edx.ptr_v = v2;
 
+    // N64 port: the original relies on x87 semantics for a zero-area (degenerate) triangle, where 1/0 gives
+    // infinity and NaN indefinites later turn into harmless integers. Elsewhere those NaNs become garbage
+    // edge counts and wild writes (crash when a car body gets crushed), so reject such triangles up front.
+    {
+        const brp_vertex *gv0 = (const brp_vertex *)v0;
+        const brp_vertex *gv1 = (const brp_vertex *)v1;
+        const brp_vertex *gv2 = (const brp_vertex *)v2;
+        double g_dx1 = (double)gv1->comp_f[C_SX] - (double)gv0->comp_f[C_SX];
+        double g_dy1 = (double)gv1->comp_f[C_SY] - (double)gv0->comp_f[C_SY];
+        double g_dx2 = (double)gv2->comp_f[C_SX] - (double)gv0->comp_f[C_SX];
+        double g_dy2 = (double)gv2->comp_f[C_SY] - (double)gv0->comp_f[C_SY];
+        double g_area = g_dx2 * g_dy1 - g_dx1 * g_dy2;
+
+        if (g_area == 0.0 || g_area != g_area || g_area > 1e30 || g_area < -1e30) {
+            workspace.topCount = -1;
+            workspace.bottomCount = -1;
+            return FPSETUP_EMPTY_TRIANGLE;
+        }
+    }
+
     //; Calculate area of triangle and generate dx1/2area, dx1/2area, dx1/2area and dx1/2area
     //;
     //; Also sort the vertices in Y order whilst divide is happening
