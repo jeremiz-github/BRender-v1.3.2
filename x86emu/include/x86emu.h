@@ -136,8 +136,14 @@ typedef struct x86_reg {
 // void fild_ptr(intptr_t val);
 
 typedef struct x86emu_state_t {
+#ifdef N64
+    /* VR4300: long double is 128-bit soft-float (very slow); double runs on the FPU */
+    double x87_stack[8];
+    double x87_swap;
+#else
     long double x87_stack[8];
     long double x87_swap;
+#endif
     int  x87_stack_top;
     int cf;
     int zf;
@@ -225,9 +231,15 @@ extern x86_reg eax, ebx, ecx, edx, ebp, edi, esi;
     *(float*)dest = (float)ST_(0); \
     X87_POP();
 
+#ifdef N64
+#define FISTP(dest) \
+    *(int32_t*)dest = (int32_t)(ST_(0) + (ST_(0) >= 0 ? 0.5 : -0.5)); \
+    X87_POP();
+#else
 #define FISTP(dest) \
     *(int32_t*)dest = round(ST_(0)); \
     X87_POP();
+#endif
 
 #define FABS() \
     ST_(0) = fabs(ST_(0));
