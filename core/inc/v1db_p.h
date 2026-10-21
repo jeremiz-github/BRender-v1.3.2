@@ -190,6 +190,7 @@ br_bounds * BR_PUBLIC_ENTRY BrActorToBounds( br_bounds *b, br_actor *ap);
 br_model * BR_PUBLIC_ENTRY BrModelLoad(char *filename);
 br_uint_32 BR_PUBLIC_ENTRY BrModelSave(char *filename,br_model *model);
 br_uint_32 BR_PUBLIC_ENTRY BrModelLoadMany(char *filename,br_model **models,br_uint_16 num);
+br_uint_32 BR_PUBLIC_ENTRY BrModelLoadManyCB(char *filename,void (*cb)(br_model *model,void *arg),void *arg);
 br_uint_32 BR_PUBLIC_ENTRY BrModelSaveMany(char *filename,br_model **models,br_uint_16 num);
 br_error BR_PUBLIC_ENTRY BrModelFileCount(const char *filename, br_uint_16 *num);
 

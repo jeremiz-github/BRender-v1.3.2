@@ -1953,6 +1953,39 @@ br_uint_32 BR_PUBLIC_ENTRY BrModelLoadMany(char *filename,br_model **models,br_u
 }
 
 /*
+ * Like BrModelLoadMany(), but hands each model to a callback as soon as it has been read, so a huge
+ * model file never has to sit in memory all at once.
+ */
+br_uint_32 BR_PUBLIC_ENTRY BrModelLoadManyCB(char *filename,void (*cb)(br_model *model,void *arg),void *arg)
+{
+	int	count = 0;
+	int r;
+	br_datafile *df;
+
+	df = DfOpen(filename, 0, BR_SCALAR_TOKEN);
+
+	if(df == NULL)
+		return 0;
+
+	for (;;) {
+		r=DfChunksInterpret(df, &ModelLoadTable);
+
+		if(DfTopType() == DFST_MODEL) {
+			br_model *m = DfPop(DFST_MODEL, 0);
+			count++;
+			cb(m, arg);
+		}
+
+		if(r==0)
+			break;
+	}
+
+	DfClose(df);
+
+	return count;
+}
+
+/*
  * Write a complete single model.
  *
  * Does not know about groups - which would be a quicker way of acquiring
