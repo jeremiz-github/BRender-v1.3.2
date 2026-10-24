@@ -34,21 +34,37 @@ typedef struct {
     float f[VF];
 } rv;
 
-static struct {
-    int scene_open;
-    int scene_rejected;
-    uint8_t* pixels;
-    int row_bytes, w, h;
-    const struct local_block* orig;
+typedef struct {
     brp_block blk;
-    /* classification of the current block */
+    const struct local_block* orig;
     int textured, persp, blend, decal;
     int has_i_vertex, has_i_const;
     int shade_h;
     const uint8_t* shade_table;
     int index_base;
-    int tex_ok;
     float tex_w, tex_h;
+    const uint8_t* tex_base;
+    int tex_wi, tex_hi, tex_stride;
+    int mode;
+} rdp_blk;
+
+#define POOL 96
+static rdp_blk pool[POOL];
+static int pool_next;
+
+/* per-scene state + the block currently being rendered (copied from its pool entry) */
+static struct {
+    int scene_open;
+    int scene_rejected;
+    uint8_t* pixels;
+    int row_bytes, w, h;
+    int textured, persp, blend, decal;
+    int has_i_vertex, has_i_const;
+    int shade_h;
+    const uint8_t* shade_table;
+    int index_base;
+    float tex_w, tex_h;
+    int tex_ok;
     int mode;
 } R;
 
@@ -331,10 +347,27 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
     rv a, b, c;
     int k;
     const brp_vertex* t[3];
+    const rdp_blk* pb = (const rdp_blk*)block;
 
     if (v2 == NULL || !R.scene_open) {
         return;
     }
+    R.textured = pb->textured;
+    R.persp = pb->persp;
+    R.blend = pb->blend;
+    R.decal = pb->decal;
+    R.has_i_vertex = pb->has_i_vertex;
+    R.has_i_const = pb->has_i_const;
+    R.shade_h = pb->shade_h;
+    R.shade_table = pb->shade_table;
+    R.index_base = pb->index_base;
+    R.tex_w = pb->tex_w;
+    R.tex_h = pb->tex_h;
+    R.tex_ok = 1;
+    if (pb->textured) {
+        R.tex_ok = N64_Rdp_SetTexture(pb->tex_base, pb->tex_wi, pb->tex_hi, pb->tex_stride);
+    }
+    N64_Rdp_SetMode(pb->mode);
     t[0] = v0;
     t[1] = v1;
     t[2] = v2;
@@ -395,40 +428,57 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
         R.h = work.colour.height;
     }
 
-    textured = strstr(id, "Textured") != NULL;
-    R.textured = textured;
-    R.persp = (lb->p.vertex_components & CM_W) != 0;
-    R.blend = strstr(id, "Blend") != NULL;
-    R.decal = strstr(id, "Decal") != NULL;
-    R.has_i_vertex = (lb->p.vertex_components & CM_I) != 0;
-    R.has_i_const = (lb->p.constant_components & CM_I) != 0;
-    R.shade_h = self->prim.index_shade.buffer ? self->prim.index_shade.height : 0;
-    R.shade_table = self->prim.index_shade.buffer ? (const uint8_t*)work.shade_table : NULL;
-    R.index_base = self->prim.index_base;
-    R.tex_ok = 0;
-    if (textured) {
-        if (work.texture.base != NULL && work.texture.type == BR_PMT_INDEX_8) {
-            R.tex_w = (float)work.texture.width_p;
-            R.tex_h = (float)work.texture.height;
-            R.tex_ok = N64_Rdp_SetTexture((const uint8_t*)work.texture.base, work.texture.width_p,
-                work.texture.height, work.texture.stride_b);
+    {
+        rdp_blk* e = NULL;
+        int n;
+        const uint8_t* tbase = (const uint8_t*)work.texture.base;
+        const uint8_t* stab = self->prim.index_shade.buffer ? (const uint8_t*)work.shade_table : NULL;
+        int ibase = self->prim.index_base;
+        textured = strstr(id, "Textured") != NULL;
+        if (textured && (tbase == NULL || work.texture.type != BR_PMT_INDEX_8)) {
+            return;
         }
-        R.mode = R.blend ? 3 : 1;
-    } else {
-        R.mode = R.blend ? 2 : 0;
+        for (n = 0; n < POOL; n++) {
+            if (pool[n].orig == lb && pool[n].tex_base == (textured ? tbase : NULL) && pool[n].shade_table == stab
+                && pool[n].index_base == ibase && pool[n].tex_wi == (textured ? (int)work.texture.width_p : 0)) {
+                e = &pool[n];
+                break;
+            }
+        }
+        if (e == NULL) {
+            e = &pool[pool_next];
+            pool_next = (pool_next + 1) % POOL;
+            memset(e, 0, sizeof(*e));
+            e->orig = lb;
+            e->textured = textured;
+            e->persp = (lb->p.vertex_components & CM_W) != 0;
+            e->blend = strstr(id, "Blend") != NULL;
+            e->decal = strstr(id, "Decal") != NULL;
+            e->has_i_vertex = (lb->p.vertex_components & CM_I) != 0;
+            e->has_i_const = (lb->p.constant_components & CM_I) != 0;
+            e->shade_h = stab ? self->prim.index_shade.height : 0;
+            e->shade_table = stab;
+            e->index_base = ibase;
+            if (textured) {
+                e->tex_base = tbase;
+                e->tex_wi = work.texture.width_p;
+                e->tex_hi = work.texture.height;
+                e->tex_stride = work.texture.stride_b;
+                e->tex_w = (float)e->tex_wi;
+                e->tex_h = (float)e->tex_hi;
+                e->mode = e->blend ? 3 : 1;
+            } else {
+                e->mode = e->blend ? 2 : 0;
+            }
+            e->blk = lb->p;
+            e->blk.render = (brp_render_fn*)RdpTriangleRender;
+            e->blk.chain = NULL;
+            e->blk.convert_mask_f = e->blk.convert_mask_f | e->blk.convert_mask_x | e->blk.convert_mask_i;
+            e->blk.convert_mask_x = 0;
+            e->blk.convert_mask_i = 0;
+        }
+        *rpb = &e->blk;
     }
-    if (textured && !R.tex_ok) {
-        return; /* triangles of this material are dropped (RdpTriangleRender checks tex_ok) */
-    }
-    N64_Rdp_SetMode(R.mode);
-
-    R.blk = lb->p;
-    R.blk.render = (brp_render_fn*)RdpTriangleRender;
-    R.blk.chain = NULL;
-    R.blk.convert_mask_f = R.blk.convert_mask_f | R.blk.convert_mask_x | R.blk.convert_mask_i;
-    R.blk.convert_mask_x = 0;
-    R.blk.convert_mask_i = 0;
-    *rpb = &R.blk;
 }
 
 /* End of scene (primitive library flush) */
