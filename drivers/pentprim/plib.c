@@ -220,6 +220,12 @@ static br_error BR_CMETHOD_DECL(br_primitive_library_soft, flush)(
    ASSERT(self);
 
 	RasteriseBufferFlush();
+#ifdef N64
+	{
+		extern void RdpFlush(void);
+		RdpFlush();
+	}
+#endif
 
 	/*
 	 * Unlock destination pixelmap, now rendering is complete.

@@ -369,7 +369,38 @@ static br_boolean isPowerof2(br_int_32 x)
 	return !((x-1) & x);
 }
 
+#ifdef N64
+#include "rdprend.c"
+static br_error renderBeginSoft(
+		struct br_primitive_state *self,
+		struct brp_block **rpb,
+		br_boolean *block_changed,
+		br_boolean *ranges_changed,
+		br_boolean no_render,
+		br_token prim_type);
+
 br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
+		struct br_primitive_state *self,
+		struct brp_block **rpb,
+		br_boolean *block_changed,
+		br_boolean *ranges_changed,
+		br_boolean no_render,
+		br_token prim_type)
+{
+	br_error e = renderBeginSoft(self, rpb, block_changed, ranges_changed, no_render, prim_type);
+	if (e == BRE_OK && !no_render && gN64_use_rdp && self->cache.last_block != NULL) {
+		RdpSubstitute(self, (struct local_block *)self->cache.last_block, rpb);
+	}
+	return e;
+}
+#define RENDERBEGIN_SOFT_STATIC 1
+#endif
+
+#ifdef RENDERBEGIN_SOFT_STATIC
+static br_error renderBeginSoft(
+#else
+br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
+#endif
 		struct br_primitive_state *self,
 		struct brp_block **rpb,
 		br_boolean *block_changed,
