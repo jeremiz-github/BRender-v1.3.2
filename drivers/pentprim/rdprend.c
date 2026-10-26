@@ -13,6 +13,7 @@
 #include "shortcut.h"
 #include "brassert.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* harness side (src/harness/platforms/n64_rdp.c) */
@@ -67,6 +68,12 @@ static struct {
     int tex_ok;
     int mode;
 } R;
+
+/* ---- statistics (logged at the end of each scene) ---- */
+static struct {
+    int tex, flat, drop_tex, drop_bad, sub_notri, sub_noz, sub_notex, sub_nocpm, split_tex_types[4];
+    int dumped;
+} ST;
 
 /* ---- luminance ramp for the current shade table ---- */
 static float ramp[256];
@@ -380,7 +387,13 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
         }
     }
     if (R.textured && !R.tex_ok) {
+        ST.drop_tex++;
         return;
+    }
+    if (R.textured) {
+        ST.tex++;
+    } else {
+        ST.flat++;
     }
     fill_vertex(&a, v0, v0);
     fill_vertex(&b, v1, v0);
@@ -390,6 +403,13 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
         if (!(a.f[9] > 0 && b.f[9] > 0 && c.f[9] > 0)) {
             return;
         }
+    }
+    if (R.textured && ST.dumped < 12) {
+        ST.dumped++;
+        fprintf(stderr, "rdp tri tex %dx%d persp %d iw %.4f %.4f %.4f uv0 %.2f,%.2f uv1 %.2f,%.2f uv2 %.2f,%.2f rawUV0 %.3f,%.3f W0 %.3f lum %.2f xy %.1f,%.1f %.1f,%.1f %.1f,%.1f z %.3f\n",
+            (int)R.tex_w, (int)R.tex_h, R.persp, a.f[9], b.f[9], c.f[9],
+            a.f[7] / a.f[9], a.f[8] / a.f[9], b.f[7] / b.f[9], b.f[8] / b.f[9], c.f[7] / c.f[9], c.f[8] / c.f[9],
+            v0->comp[C_U], v0->comp[C_V], v0->comp[C_W], a.f[3], a.f[0], a.f[1], b.f[0], b.f[1], c.f[0], c.f[1], a.f[2]);
     }
     draw_tri(&a, &b, &c);
 }
@@ -403,14 +423,17 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
     int textured;
 
     if (!gN64_use_rdp || lb == NULL || lb->p.type != BRT_TRIANGLE) {
+        ST.sub_notri++;
         return;
     }
     id = lb->p.identifier;
     if (id == NULL || strstr(id, "Z Buffered") == NULL) {
+        ST.sub_noz++;
         return;
     }
     cpm = self->out.colour.pixelmap;
     if (cpm == NULL || work.colour.base == NULL) {
+        ST.sub_nocpm++;
         return;
     }
     if (!R.scene_open) {
@@ -436,6 +459,7 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
         int ibase = self->prim.index_base;
         textured = strstr(id, "Textured") != NULL;
         if (textured && (tbase == NULL || work.texture.type != BR_PMT_INDEX_8)) {
+            ST.sub_notex++;
             return;
         }
         for (n = 0; n < POOL; n++) {
@@ -483,6 +507,13 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
 
 /* End of scene (primitive library flush) */
 void RdpFlush(void) {
+    static int logs = 0;
+    if (R.scene_open && logs < 40) {
+        logs++;
+        fprintf(stderr, "rdp scene: tex tris %d, flat tris %d, dropped(tex) %d | sw blocks: non-tri %d, non-zbuf %d, no-8bit-tex %d | pool %d\n",
+            ST.tex, ST.flat, ST.drop_tex, ST.sub_notri, ST.sub_noz, ST.sub_notex, pool_next);
+    }
+    ST.tex = ST.flat = ST.drop_tex = ST.sub_notri = ST.sub_noz = ST.sub_notex = ST.sub_nocpm = 0;
     if (R.scene_open) {
         N64_Rdp_EndScene(R.pixels, R.row_bytes, R.w, R.h);
     }
