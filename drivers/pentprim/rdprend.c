@@ -44,6 +44,7 @@ typedef struct {
     const uint8_t* shade_table;
     int index_base;
     float tex_w, tex_h;
+    int unscaled;
     const uint8_t* tex_base;
     int tex_wi, tex_hi, tex_stride;
     int mode;
@@ -65,6 +66,7 @@ static struct {
     const uint8_t* shade_table;
     int index_base;
     float tex_w, tex_h;
+    int unscaled;
     int tex_ok;
     int mode;
 } R;
@@ -340,8 +342,9 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
             float w = v->comp[C_W];
             iw = w > 1e-6f ? 1.0f / w : 1.0f;
         }
-        o->f[7] = v->comp[C_U] * iw;
-        o->f[8] = v->comp[C_V] * iw;
+        float us = R.unscaled ? R.tex_w : 1.0f, vs = R.unscaled ? R.tex_h : 1.0f;
+        o->f[7] = v->comp[C_U] * us * iw;
+        o->f[8] = v->comp[C_V] * vs * iw;
         o->f[9] = iw;
     } else {
         o->f[7] = o->f[8] = 0;
@@ -370,6 +373,7 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
     R.index_base = pb->index_base;
     R.tex_w = pb->tex_w;
     R.tex_h = pb->tex_h;
+    R.unscaled = pb->unscaled;
     R.tex_ok = 1;
     if (pb->textured) {
         R.tex_ok = N64_Rdp_SetTexture(pb->tex_base, pb->tex_wi, pb->tex_hi, pb->tex_stride);
@@ -490,9 +494,21 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
                 e->tex_stride = work.texture.stride_b;
                 e->tex_w = (float)e->tex_wi;
                 e->tex_h = (float)e->tex_hi;
+                e->unscaled = (lb->range_flags & RF_UNSCALED_TEXTURE_COORDS) != 0;
                 e->mode = e->blend ? 3 : 1;
             } else {
                 e->mode = e->blend ? 2 : 0;
+            }
+            if (textured) {
+                static int sublogs = 0;
+                if (sublogs < 8) {
+                    sublogs++;
+                    fprintf(stderr, "rdp sub: scales U %g V %g | colour_map %dx%d | work tex %dx%d | tex_type %d range_flags %x\n",
+                        (double)self->cache.comp_scales[C_U], (double)self->cache.comp_scales[C_V],
+                        (int)self->prim.colour_map.width,
+                        (int)self->prim.colour_map.height,
+                        e->tex_wi, e->tex_hi, (int)lb->texture_type, (unsigned)lb->range_flags);
+                }
             }
             e->blk = lb->p;
             e->blk.render = (brp_render_fn*)RdpTriangleRender;
