@@ -437,6 +437,17 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
         return;
     }
     id = lb->p.identifier;
+    {
+        static const char* seen[24];
+        static int nseen;
+        int q;
+        for (q = 0; q < nseen && seen[q] != id; q++) {
+        }
+        if (q == nseen && nseen < 24 && id != NULL) {
+            seen[nseen++] = id;
+            fprintf(stderr, "rdp id %d '%s' vcomp %x ccomp %x\n", nseen, id, (unsigned)lb->p.vertex_components, (unsigned)lb->p.constant_components);
+        }
+    }
     if (id == NULL || strstr(id, "Z Buffered") == NULL) {
         ST.sub_noz++;
         return;
@@ -518,7 +529,7 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
             }
             {
                 static int plogs = 0;
-                if (plogs < 60) {
+                if (plogs < 0) {
                     plogs++;
                     fprintf(stderr, "rdp blk #%d '%s' tex %d blend %d decal %d vcomp %x ccomp %x tex %dx%d\n", plogs, id, textured, e->blend, e->decal,
                         (unsigned)lb->p.vertex_components, (unsigned)lb->p.constant_components, e->tex_wi, e->tex_hi);
