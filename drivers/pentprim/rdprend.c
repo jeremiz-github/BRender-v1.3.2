@@ -20,6 +20,7 @@
 extern int gN64_use_rdp;
 extern int N64_Rdp_BeginScene(void* pixels, int row_bytes, int w, int h);
 extern void N64_Rdp_EndScene(uint8_t* pixels, int row_bytes, int w, int h);
+extern void N64_Rdp_PrepareBlend(float minx, float miny, float maxx, float maxy);
 extern int N64_Rdp_SetTexture(const uint8_t* px, int w, int h, int row_bytes, int* ew, int* eh);
 extern void N64_Rdp_SetMode(int kind);
 extern void N64_Rdp_TriFlat(const float* a, const float* b, const float* c);
@@ -420,6 +421,14 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
             (int)R.tex_w, (int)R.tex_h, R.persp, a.f[9], b.f[9], c.f[9],
             a.f[7] / a.f[9], a.f[8] / a.f[9], b.f[7] / b.f[9], b.f[8] / b.f[9], c.f[7] / c.f[9], c.f[8] / c.f[9],
             v0->comp[C_U], v0->comp[C_V], v0->comp[C_W], a.f[3], a.f[0], a.f[1], b.f[0], b.f[1], c.f[0], c.f[1], a.f[2]);
+    }
+    if (R.blend) {
+        float mnx = a.f[0], mxx = a.f[0], mny = a.f[1], mxy = a.f[1];
+        if (b.f[0] < mnx) mnx = b.f[0]; if (b.f[0] > mxx) mxx = b.f[0];
+        if (c.f[0] < mnx) mnx = c.f[0]; if (c.f[0] > mxx) mxx = c.f[0];
+        if (b.f[1] < mny) mny = b.f[1]; if (b.f[1] > mxy) mxy = b.f[1];
+        if (c.f[1] < mny) mny = c.f[1]; if (c.f[1] > mxy) mxy = c.f[1];
+        N64_Rdp_PrepareBlend(mnx, mny, mxx, mxy);
     }
     draw_tri(&a, &b, &c);
 }
