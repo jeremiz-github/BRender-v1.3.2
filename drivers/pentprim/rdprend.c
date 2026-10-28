@@ -479,7 +479,7 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
             memset(e, 0, sizeof(*e));
             e->orig = lb;
             e->textured = textured;
-            e->persp = (lb->p.vertex_components & CM_W) != 0;
+            e->persp = 1; /* C_W (view depth) is always valid: always perspective-correct */
             e->blend = strstr(id, "Blend") != NULL;
             e->decal = strstr(id, "Decal") != NULL;
             e->has_i_vertex = (lb->p.vertex_components & CM_I) != 0;
@@ -508,6 +508,14 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
                         (int)self->prim.colour_map.width,
                         (int)self->prim.colour_map.height,
                         e->tex_wi, e->tex_hi, (int)lb->texture_type, (unsigned)lb->range_flags);
+                }
+            }
+            {
+                static int plogs = 0;
+                if (plogs < 60) {
+                    plogs++;
+                    fprintf(stderr, "rdp blk #%d '%s' tex %d blend %d decal %d vcomp %x ccomp %x tex %dx%d\n", plogs, id, textured, e->blend, e->decal,
+                        (unsigned)lb->p.vertex_components, (unsigned)lb->p.constant_components, e->tex_wi, e->tex_hi);
                 }
             }
             e->blk = lb->p;
