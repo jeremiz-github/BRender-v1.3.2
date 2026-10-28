@@ -20,7 +20,7 @@
 extern int gN64_use_rdp;
 extern int N64_Rdp_BeginScene(void* pixels, int row_bytes, int w, int h);
 extern void N64_Rdp_EndScene(uint8_t* pixels, int row_bytes, int w, int h);
-extern int N64_Rdp_SetTexture(const uint8_t* px, int w, int h, int row_bytes);
+extern int N64_Rdp_SetTexture(const uint8_t* px, int w, int h, int row_bytes, int* ew, int* eh);
 extern void N64_Rdp_SetMode(int kind);
 extern void N64_Rdp_TriFlat(const float* a, const float* b, const float* c);
 extern void N64_Rdp_TriTex(const float* a, const float* b, const float* c);
@@ -67,6 +67,7 @@ static struct {
     int index_base;
     float tex_w, tex_h;
     int unscaled;
+    float uk, vk;
     int tex_ok;
     int mode;
 } R;
@@ -342,7 +343,7 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
             float w = v->comp[C_W];
             iw = w > 1e-6f ? 1.0f / w : 1.0f;
         }
-        float us = R.unscaled ? R.tex_w : 1.0f, vs = R.unscaled ? R.tex_h : 1.0f;
+        float us = R.unscaled ? R.tex_w : R.uk, vs = R.unscaled ? R.tex_h : R.vk;
         o->f[7] = v->comp[C_U] * us * iw;
         o->f[8] = v->comp[C_V] * vs * iw;
         o->f[9] = iw;
@@ -376,7 +377,12 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
     R.unscaled = pb->unscaled;
     R.tex_ok = 1;
     if (pb->textured) {
-        R.tex_ok = N64_Rdp_SetTexture(pb->tex_base, pb->tex_wi, pb->tex_hi, pb->tex_stride);
+        int ew = pb->tex_wi, eh = pb->tex_hi;
+        R.tex_ok = N64_Rdp_SetTexture(pb->tex_base, pb->tex_wi, pb->tex_hi, pb->tex_stride, &ew, &eh);
+        R.tex_w = (float)ew;
+        R.tex_h = (float)eh;
+        R.uk = ew / pb->tex_w;
+        R.vk = eh / pb->tex_h;
     }
     N64_Rdp_SetMode(pb->mode);
     t[0] = v0;
