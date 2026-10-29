@@ -387,10 +387,15 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 		br_boolean no_render,
 		br_token prim_type)
 {
-	br_error e = renderBeginSoft(self, rpb, block_changed, ranges_changed, no_render, prim_type);
+	extern void OS_N64_ProfBegin(int);
+	extern void OS_N64_ProfEnd(int);
+	br_error e;
+	OS_N64_ProfBegin(12);
+	e = renderBeginSoft(self, rpb, block_changed, ranges_changed, no_render, prim_type);
 	if (e == BRE_OK && !no_render && gN64_use_rdp && self->cache.last_block != NULL) {
 		RdpSubstitute(self, (struct local_block *)self->cache.last_block, rpb);
 	}
+	OS_N64_ProfEnd(12);
 	return e;
 }
 #define RENDERBEGIN_SOFT_STATIC 1

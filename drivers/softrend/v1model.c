@@ -997,8 +997,16 @@ br_error BR_CMETHOD_DECL(br_geometry_v1_model_soft, render)
 		br_token type)
 {
 	br_error r;
+#ifdef N64
+	extern void OS_N64_ProfBegin(int);
+	extern void OS_N64_ProfEnd(int);
+	OS_N64_ProfBegin(11);
+#endif
 
 	r = V1Model_Render(self, renderer, model, default_state, type, BR_FALSE);
+#ifdef N64
+	OS_N64_ProfEnd(11);
+#endif
 
 	return r;
 }

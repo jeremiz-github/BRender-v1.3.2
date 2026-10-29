@@ -166,10 +166,19 @@ char * BR_RESIDENT_ENTRY BrTokenIdentifier(br_token t)
 br_token BR_RESIDENT_ENTRY BrTokenType(br_token t)
 {
 	br_token_entry *te;
+	/* the token list is searched linearly and this is called for every state change: cache the results */
+	static struct { br_token token; br_token type; } cache[512];
+	unsigned slot = ((unsigned)t ^ ((unsigned)t >> 9)) & 511;
+
+	if(cache[slot].token == t && t != BR_NULL_TOKEN)
+		return cache[slot].type;
 
 	BR_FOR_LIST(&fw.tokens, te)
-		if(t == te->token)
+		if(t == te->token) {
+			cache[slot].token = t;
+			cache[slot].type = te->type;
 			return te->type;
+		}
 
 	return BR_NULL_TOKEN;
 }

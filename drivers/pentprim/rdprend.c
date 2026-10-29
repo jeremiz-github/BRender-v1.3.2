@@ -354,7 +354,10 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
     }
 }
 
-void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2,
+extern void OS_N64_ProfBegin(int);
+extern void OS_N64_ProfEnd(int);
+
+static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2,
     br_uint_16* fp_vertices, br_uint_16* fp_edges, br_vector4* fp_eqn, struct temp_face* tfp) {
     rv a, b, c;
     int k;
@@ -431,6 +434,13 @@ void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex*
         N64_Rdp_PrepareBlend(mnx, mny, mxx, mxy);
     }
     draw_tri(&a, &b, &c);
+}
+
+void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2,
+    br_uint_16* fp_vertices, br_uint_16* fp_edges, br_vector4* fp_eqn, struct temp_face* tfp) {
+    OS_N64_ProfBegin(8);
+    RdpTriangleRenderImpl(block, v0, v1, v2, fp_vertices, fp_edges, fp_eqn, tfp);
+    OS_N64_ProfEnd(8);
 }
 
 /*
@@ -565,7 +575,9 @@ void RdpFlush(void) {
     }
     ST.tex = ST.flat = ST.drop_tex = ST.sub_notri = ST.sub_noz = ST.sub_notex = ST.sub_nocpm = 0;
     if (R.scene_open) {
+        OS_N64_ProfBegin(10);
         N64_Rdp_EndScene(R.pixels, R.row_bytes, R.w, R.h);
+        OS_N64_ProfEnd(10);
     }
     R.scene_open = 0;
     R.scene_rejected = 0;
