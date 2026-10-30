@@ -20,6 +20,8 @@
 extern int gN64_use_rdp;
 extern int N64_Rdp_BeginScene(void* pixels, int row_bytes, int w, int h);
 extern void N64_Rdp_EndScene(uint8_t* pixels, int row_bytes, int w, int h);
+extern void OS_N64_ProfBegin(int);
+extern void OS_N64_ProfEnd(int);
 extern void N64_Rdp_PrepareBlend(float minx, float miny, float maxx, float maxy);
 extern int N64_Rdp_SetTexture(const uint8_t* px, int w, int h, int row_bytes, int* ew, int* eh);
 extern void N64_Rdp_SetMode(int kind);
@@ -354,9 +356,6 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
     }
 }
 
-extern void OS_N64_ProfBegin(int);
-extern void OS_N64_ProfEnd(int);
-
 static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2,
     br_uint_16* fp_vertices, br_uint_16* fp_edges, br_vector4* fp_eqn, struct temp_face* tfp) {
     rv a, b, c;
@@ -409,9 +408,11 @@ static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* 
     } else {
         ST.flat++;
     }
+    OS_N64_ProfBegin(18);
     fill_vertex(&a, v0, v0);
     fill_vertex(&b, v1, v0);
     fill_vertex(&c, v2, v0);
+    OS_N64_ProfEnd(18);
     if (R.textured) {
         /* only perspective blocks have a valid C_W; others keep iw = 1 */
         if (!(a.f[9] > 0 && b.f[9] > 0 && c.f[9] > 0)) {
