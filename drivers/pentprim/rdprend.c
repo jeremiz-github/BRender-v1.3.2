@@ -22,6 +22,9 @@ extern int N64_Rdp_BeginScene(void* pixels, int row_bytes, int w, int h);
 extern void N64_Rdp_EndScene(uint8_t* pixels, int row_bytes, int w, int h);
 extern void OS_N64_ProfBegin(int);
 extern void OS_N64_ProfEnd(int);
+extern void N64_Rdp_UseTlut(const uint16_t* lut);
+extern int gN64_fog_on;
+extern float gN64_fog_z0, gN64_fog_k;
 extern void N64_Rdp_PrepareBlend(float minx, float miny, float maxx, float maxy);
 extern int N64_Rdp_SetTexture(const uint8_t* px, int w, int h, int row_bytes, int* ew, int* eh);
 extern void N64_Rdp_SetMode(int kind);
@@ -31,8 +34,10 @@ extern uint16_t N64_Rdp_PaletteEntry(int i);
 extern int N64_Rdp_OffsetX(void);
 extern int N64_Rdp_OffsetY(void);
 extern unsigned N64_Rdp_PaletteSerial(void);
+extern void N64_Rdp_UseTlut(const uint16_t* t);
+extern void N64_Rdp_InvalidateTlut(void);
 
-/* vertex: x y z r g b a  s*iw t*iw iw   (attributes linear in screen space) */
+/* vertex: x y z r g b a  s t iw   (s,t = raw texel coordinates, iw = 1/w) */
 #define VF 10
 typedef struct {
     float f[VF];
@@ -51,6 +56,7 @@ typedef struct {
     const uint8_t* tex_base;
     int tex_wi, tex_hi, tex_stride;
     int mode;
+    const uint8_t* blend_tab; /* 256x256 index blend table (dst*256+src), or NULL */
 } rdp_blk;
 
 #define POOL 96
@@ -70,9 +76,10 @@ static struct {
     int index_base;
     float tex_w, tex_h;
     int unscaled;
-    float uk, vk;
+    float uk, vk, kavg;
     int tex_ok;
     int mode;
+    float bk;
 } R;
 
 /* ---- statistics (logged at the end of each scene) ---- */
@@ -118,6 +125,105 @@ static void build_ramp(const uint8_t* table, int h) {
     ramp_serial = N64_Rdp_PaletteSerial();
 }
 
+/* ---- blend tables -> RDP transparency ----
+ * The game blends with a 256x256 table: out = table[dst * 256 + src]. For every texel value t the effect on
+ * the background is fitted as  out = dst * (1 - k) + T * k  (using the darkest and the brightest palette
+ * colours as probes). k becomes the alpha and T the colour of palette entry t in a dedicated TLUT. */
+typedef struct {
+    const uint8_t* tab;
+    unsigned serial;
+    int ia;       /* 1: grey (intensity + alpha) palette, 0: colour palette with constant alpha */
+    float kavg;
+    uint16_t lut[256] __attribute__((aligned(16)));
+} blut;
+#define NBLUT 8
+static blut bluts[NBLUT];
+static int blut_next;
+
+static void pal_rgb(int i, float* r, float* g, float* b) {
+    uint16_t c = N64_Rdp_PaletteEntry(i);
+    *r = (float)((c >> 11) & 31) * (255.0f / 31.0f);
+    *g = (float)((c >> 6) & 31) * (255.0f / 31.0f);
+    *b = (float)((c >> 1) & 31) * (255.0f / 31.0f);
+}
+
+static void blut_build(blut* L, const uint8_t* tab) {
+    int dB = 0, dW = 0, t, c, i;
+    long lmin = 1 << 30, lmax = -1;
+    float B[3], Wc[3], Tc[256][3], k[256];
+    int grey = 1;
+    float ksum = 0;
+    int kn = 0;
+
+    for (i = 0; i < 256; i++) {
+        long l = lum5(N64_Rdp_PaletteEntry(i));
+        if (l < lmin) { lmin = l; dB = i; }
+        if (l > lmax) { lmax = l; dW = i; }
+    }
+    pal_rgb(dB, &B[0], &B[1], &B[2]);
+    pal_rgb(dW, &Wc[0], &Wc[1], &Wc[2]);
+    for (t = 0; t < 256; t++) {
+        float oB[3], oW[3], ks = 0;
+        int kc = 0;
+        pal_rgb(tab[dB * 256 + t], &oB[0], &oB[1], &oB[2]);
+        pal_rgb(tab[dW * 256 + t], &oW[0], &oW[1], &oW[2]);
+        for (c = 0; c < 3; c++) {
+            if (Wc[c] - B[c] > 24.0f) {
+                ks += 1.0f - (oW[c] - oB[c]) / (Wc[c] - B[c]);
+                kc++;
+            }
+        }
+        k[t] = kc ? ks / (float)kc : 1.0f;
+        if (k[t] < 0) k[t] = 0;
+        if (k[t] > 1) k[t] = 1;
+        for (c = 0; c < 3; c++) {
+            float v = k[t] > 0.03f ? (oB[c] - B[c] * (1.0f - k[t])) / k[t] : oB[c];
+            Tc[t][c] = v < 0 ? 0 : (v > 255 ? 255 : v);
+        }
+        if (t > 0 && k[t] > 0.05f) {
+            float d1 = Tc[t][0] - Tc[t][1], d2 = Tc[t][1] - Tc[t][2];
+            if (d1 > 28 || d1 < -28 || d2 > 28 || d2 < -28) {
+                grey = 0;
+            }
+            ksum += k[t];
+            kn++;
+        }
+    }
+    L->ia = grey;
+    L->kavg = kn ? ksum / (float)kn : 0.5f;
+    for (t = 0; t < 256; t++) {
+        if (t == 0 || k[t] <= 0.03f) {
+            L->lut[t] = 0;
+        } else if (grey) {
+            int I = (int)((Tc[t][0] + Tc[t][1] + Tc[t][2]) * (1.0f / 3.0f) + 0.5f);
+            int A = (int)(k[t] * 255.0f + 0.5f);
+            L->lut[t] = (uint16_t)((I << 8) | A);
+        } else {
+            L->lut[t] = (uint16_t)((((int)(Tc[t][0] * (31.0f / 255.0f) + 0.5f)) << 11) | (((int)(Tc[t][1] * (31.0f / 255.0f) + 0.5f)) << 6)
+                | (((int)(Tc[t][2] * (31.0f / 255.0f) + 0.5f)) << 1) | 1);
+        }
+    }
+    L->tab = tab;
+    L->serial = N64_Rdp_PaletteSerial();
+    N64_Rdp_InvalidateTlut();
+}
+
+static blut* blut_get(const uint8_t* tab) {
+    int n;
+    for (n = 0; n < NBLUT; n++) {
+        if (bluts[n].tab == tab) {
+            if (bluts[n].serial != N64_Rdp_PaletteSerial()) {
+                blut_build(&bluts[n], tab);
+            }
+            return &bluts[n];
+        }
+    }
+    n = blut_next;
+    blut_next = (blut_next + 1) % NBLUT;
+    blut_build(&bluts[n], tab);
+    return &bluts[n];
+}
+
 static float shade_of(float i) {
     int r;
     float f;
@@ -153,49 +259,43 @@ static int finite_f(float v) {
 }
 
 static void emit_one(const rv* a, const rv* b, const rv* c) {
-    float va[10], vb[10], vc[10];
-    float* out[3] = { va, vb, vc };
-    const rv* in[3] = { a, b, c };
-    int k, j;
-    float umin, vmin, bu, bv;
-
-    for (k = 0; k < 3; k++) {
-        for (j = 0; j < 7; j++) {
-            out[k][j] = in[k]->f[j];
-        }
-        if (R.textured) {
-            float iw = in[k]->f[9];
-            out[k][7] = in[k]->f[7] / iw;
-            out[k][8] = in[k]->f[8] / iw;
-            out[k][9] = iw;
-        }
-    }
     if (R.textured) {
-        /* bring the texture coordinates close to 0 (the RDP only holds +-1024 texels) */
-        umin = va[7] < vb[7] ? va[7] : vb[7];
-        if (vc[7] < umin) {
-            umin = vc[7];
+        float umin, umax, vmin, vmax;
+        umin = umax = a->f[7];
+        vmin = vmax = a->f[8];
+        if (b->f[7] < umin) umin = b->f[7]; else if (b->f[7] > umax) umax = b->f[7];
+        if (c->f[7] < umin) umin = c->f[7]; else if (c->f[7] > umax) umax = c->f[7];
+        if (b->f[8] < vmin) vmin = b->f[8]; else if (b->f[8] > vmax) vmax = b->f[8];
+        if (c->f[8] < vmin) vmin = c->f[8]; else if (c->f[8] > vmax) vmax = c->f[8];
+        if (umin > -900.0f && umax < 900.0f && vmin > -900.0f && vmax < 900.0f) {
+            N64_Rdp_TriTex(a->f, b->f, c->f);
+        } else {
+            /* bring the texture coordinates close to 0 (the RDP only holds +-1024 texels) */
+            rv ta = *a, tb = *b, tc = *c;
+            float bu = floorf(umin / R.tex_w) * R.tex_w;
+            float bv = floorf(vmin / R.tex_h) * R.tex_h;
+            ta.f[7] -= bu; tb.f[7] -= bu; tc.f[7] -= bu;
+            ta.f[8] -= bv; tb.f[8] -= bv; tc.f[8] -= bv;
+            N64_Rdp_TriTex(ta.f, tb.f, tc.f);
         }
-        vmin = va[8] < vb[8] ? va[8] : vb[8];
-        if (vc[8] < vmin) {
-            vmin = vc[8];
-        }
-        bu = floorf(umin / R.tex_w) * R.tex_w;
-        bv = floorf(vmin / R.tex_h) * R.tex_h;
-        for (k = 0; k < 3; k++) {
-            out[k][7] -= bu;
-            out[k][8] -= bv;
-        }
-        N64_Rdp_TriTex(va, vb, vc);
     } else {
-        N64_Rdp_TriFlat(va, vb, vc);
+        N64_Rdp_TriFlat(a->f, b->f, c->f);
     }
 }
 
 static void mid(rv* o, const rv* a, const rv* b) {
     int j;
-    for (j = 0; j < VF; j++) {
+    for (j = 0; j < 7; j++) {
         o->f[j] = (a->f[j] + b->f[j]) * 0.5f;
+    }
+    o->f[9] = (a->f[9] + b->f[9]) * 0.5f;
+    if (R.textured && o->f[9] > 0) {
+        float inv = 1.0f / o->f[9];
+        o->f[7] = (a->f[7] * a->f[9] + b->f[7] * b->f[9]) * 0.5f * inv;
+        o->f[8] = (a->f[8] * a->f[9] + b->f[8] * b->f[9]) * 0.5f * inv;
+    } else {
+        o->f[7] = (a->f[7] + b->f[7]) * 0.5f;
+        o->f[8] = (a->f[8] + b->f[8]) * 0.5f;
     }
 }
 
@@ -206,8 +306,8 @@ static void emit_split(const rv* a, const rv* b, const rv* c, int depth) {
         const rv* t[3] = { a, b, c };
         int k;
         for (k = 0; k < 3; k++) {
-            u[k] = t[k]->f[7] / t[k]->f[9];
-            v[k] = t[k]->f[8] / t[k]->f[9];
+            u[k] = t[k]->f[7];
+            v[k] = t[k]->f[8];
         }
         umin = umax = u[0];
         vmin = vmax = v[0];
@@ -268,6 +368,11 @@ static void draw_tri(const rv* a, const rv* b, const rv* c) {
         }
     }
     if (!outside) {
+        float area2 = (b->f[0] - a->f[0]) * (c->f[1] - a->f[1]) - (c->f[0] - a->f[0]) * (b->f[1] - a->f[1]);
+        if (area2 < 0.2f && area2 > -0.2f) { /* covers (nearly) no pixel centre */
+            ST.drop_bad++;
+            return;
+        }
         emit_split(a, b, c, 0);
         return;
     }
@@ -277,6 +382,10 @@ static void draw_tri(const rv* a, const rv* b, const rv* c) {
         p0[0] = *a;
         p0[1] = *b;
         p0[2] = *c;
+        for (i = 0; i < 3; i++) { /* attributes linear in screen space while clipping */
+            p0[i].f[7] *= p0[i].f[9];
+            p0[i].f[8] *= p0[i].f[9];
+        }
         n = clip_plane(p0, n, p1, 0, GUARD_X0, 1);
         if (n < 3) return;
         n = clip_plane(p1, n, p0, 0, GUARD_X1, 0);
@@ -285,11 +394,19 @@ static void draw_tri(const rv* a, const rv* b, const rv* c) {
         if (n < 3) return;
         n = clip_plane(p1, n, p0, 1, GUARD_Y1, 0);
         if (n < 3) return;
+        for (i = 0; i < n; i++) {
+            if (p0[i].f[9] > 0) {
+                float inv = 1.0f / p0[i].f[9];
+                p0[i].f[7] *= inv;
+                p0[i].f[8] *= inv;
+            }
+        }
         for (i = 1; i + 1 < n; i++) {
             emit_split(&p0[0], &p0[i], &p0[i + 1], 0);
         }
     }
 }
+
 
 static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
     float sz = v->comp[C_SZ];
@@ -334,7 +451,11 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
         }
     }
     if (R.blend) {
-        a = 0.5f;
+        a = R.kavg;
+    } else if (gN64_fog_on && z > gN64_fog_z0) {
+        /* distance fog: the blender mixes the fog colour in with (1 - alpha) */
+        a = 1.0f - (z - gN64_fog_z0) / (1.0001f - gN64_fog_z0) * gN64_fog_k;
+        if (a < 0) a = 0;
     }
     o->f[3] = r;
     o->f[4] = g;
@@ -347,8 +468,8 @@ static void fill_vertex(rv* o, const brp_vertex* v, const brp_vertex* v0) {
             iw = w > 1e-6f ? 1.0f / w : 1.0f;
         }
         float us = R.unscaled ? R.tex_w : R.uk, vs = R.unscaled ? R.tex_h : R.vk;
-        o->f[7] = v->comp[C_U] * us * iw;
-        o->f[8] = v->comp[C_V] * vs * iw;
+        o->f[7] = v->comp[C_U] * us;
+        o->f[8] = v->comp[C_V] * vs;
         o->f[9] = iw;
     } else {
         o->f[7] = o->f[8] = 0;
@@ -387,7 +508,21 @@ static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* 
         R.uk = ew / pb->tex_w;
         R.vk = eh / pb->tex_h;
     }
-    N64_Rdp_SetMode(pb->mode);
+    R.kavg = 0.5f;
+    {
+        int mode = pb->mode;
+        if (pb->textured) {
+            if (pb->blend_tab != NULL) {
+                blut* L = blut_get(pb->blend_tab);
+                N64_Rdp_UseTlut(L->lut);
+                mode = L->ia ? 4 : 3;
+                R.kavg = L->kavg;
+            } else {
+                N64_Rdp_UseTlut(NULL);
+            }
+        }
+        N64_Rdp_SetMode(mode);
+    }
     t[0] = v0;
     t[1] = v1;
     t[2] = v2;
@@ -423,7 +558,7 @@ static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* 
         ST.dumped++;
         fprintf(stderr, "rdp tri tex %dx%d persp %d iw %.4f %.4f %.4f uv0 %.2f,%.2f uv1 %.2f,%.2f uv2 %.2f,%.2f rawUV0 %.3f,%.3f W0 %.3f lum %.2f xy %.1f,%.1f %.1f,%.1f %.1f,%.1f z %.3f\n",
             (int)R.tex_w, (int)R.tex_h, R.persp, a.f[9], b.f[9], c.f[9],
-            a.f[7] / a.f[9], a.f[8] / a.f[9], b.f[7] / b.f[9], b.f[8] / b.f[9], c.f[7] / c.f[9], c.f[8] / c.f[9],
+            a.f[7], a.f[8], b.f[7], b.f[8], c.f[7], c.f[8],
             v0->comp[C_U], v0->comp[C_V], v0->comp[C_W], a.f[3], a.f[0], a.f[1], b.f[0], b.f[1], c.f[0], c.f[1], a.f[2]);
     }
     if (R.blend) {
@@ -498,14 +633,19 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
         const uint8_t* tbase = (const uint8_t*)work.texture.base;
         const uint8_t* stab = self->prim.index_shade.buffer ? (const uint8_t*)work.shade_table : NULL;
         int ibase = self->prim.index_base;
+        const uint8_t* btab = NULL;
         textured = strstr(id, "Textured") != NULL;
+        if (textured && strstr(id, "Blend") != NULL && self->prim.index_blend.buffer && self->prim.index_blend.width == 256
+            && self->prim.index_blend.height == 256) {
+            btab = (const uint8_t*)work.blend_table;
+        }
         if (textured && (tbase == NULL || work.texture.type != BR_PMT_INDEX_8)) {
             ST.sub_notex++;
             return;
         }
         for (n = 0; n < POOL; n++) {
             if (pool[n].orig == lb && pool[n].tex_base == (textured ? tbase : NULL) && pool[n].shade_table == stab
-                && pool[n].index_base == ibase && pool[n].tex_wi == (textured ? (int)work.texture.width_p : 0)) {
+                && pool[n].index_base == ibase && pool[n].blend_tab == btab && pool[n].tex_wi == (textured ? (int)work.texture.width_p : 0)) {
                 e = &pool[n];
                 break;
             }
@@ -515,6 +655,7 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
             pool_next = (pool_next + 1) % POOL;
             memset(e, 0, sizeof(*e));
             e->orig = lb;
+            e->blend_tab = btab;
             e->textured = textured;
             e->persp = 1; /* C_W (view depth) is always valid: always perspective-correct */
             e->blend = strstr(id, "Blend") != NULL;
@@ -571,10 +712,10 @@ void RdpFlush(void) {
     static int logs = 0;
     if (R.scene_open && logs < 40) {
         logs++;
-        fprintf(stderr, "rdp scene: tex tris %d, flat tris %d, dropped(tex) %d | sw blocks: non-tri %d, non-zbuf %d, no-8bit-tex %d | pool %d\n",
-            ST.tex, ST.flat, ST.drop_tex, ST.sub_notri, ST.sub_noz, ST.sub_notex, pool_next);
+        fprintf(stderr, "rdp scene: tex tris %d, flat tris %d, dropped(tex) %d tiny %d | sw blocks: non-tri %d, non-zbuf %d, no-8bit-tex %d | pool %d\n",
+            ST.tex, ST.flat, ST.drop_tex, ST.drop_bad, ST.sub_notri, ST.sub_noz, ST.sub_notex, pool_next);
     }
-    ST.tex = ST.flat = ST.drop_tex = ST.sub_notri = ST.sub_noz = ST.sub_notex = ST.sub_nocpm = 0;
+    ST.tex = ST.flat = ST.drop_tex = ST.drop_bad = ST.sub_notri = ST.sub_noz = ST.sub_notex = ST.sub_nocpm = 0;
     if (R.scene_open) {
         OS_N64_ProfBegin(10);
         N64_Rdp_EndScene(R.pixels, R.row_bytes, R.w, R.h);
