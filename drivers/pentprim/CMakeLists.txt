@@ -183,3 +183,7 @@ if(NOT MSVC)
 endif()
 
 add_library(BRender::Drivers::SoftPrim ALIAS pentprim)
+
+if(N64)
+    target_compile_options(pentprim PRIVATE -O2)
+endif()
