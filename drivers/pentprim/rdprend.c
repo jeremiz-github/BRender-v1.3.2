@@ -690,10 +690,11 @@ void RdpSubstitute(struct br_primitive_state* self, struct local_block* lb, stru
             }
             {
                 static int plogs = 0;
-                if (plogs < 0) {
+                if (plogs < 60) {
                     plogs++;
-                    fprintf(stderr, "rdp blk #%d '%s' tex %d blend %d decal %d vcomp %x ccomp %x tex %dx%d\n", plogs, id, textured, e->blend, e->decal,
-                        (unsigned)lb->p.vertex_components, (unsigned)lb->p.constant_components, e->tex_wi, e->tex_hi);
+                    fprintf(stderr, "rdp blk #%d '%s' tex %d blend %d decal %d vcomp %x ccomp %x tex %dx%d | btype %d sdoor %d light %d blendtab %p shade_h %d\n", plogs, id, textured, e->blend, e->decal,
+                        (unsigned)lb->p.vertex_components, (unsigned)lb->p.constant_components, e->tex_wi, e->tex_hi,
+                        (int)work.blend_type, (int)work.screendoor_type, (int)work.lighting_type, (const void*)btab, (int)e->shade_h);
                 }
             }
             e->blk = lb->p;
