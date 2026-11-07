@@ -10,6 +10,12 @@
 #include <string.h>
 
 #include "drv.h"
+#ifdef N64
+#include <math.h>
+#include <string.h>
+#include "rdp_t3d.h"
+extern int gN64_use_t3d;
+#endif
 #include "shortcut.h"
 #include "brassert.h"
 
@@ -956,6 +962,67 @@ static br_error V1Model_Render
 			scache.offset_z = renderer->state.cache.comp_offsets[C_SZ];
 
 			ModelToViewportUpdate();
+		}
+#endif
+#ifdef N64
+		if(type == BRT_TRIANGLE && gN64_use_t3d && !on_screen) {
+			T3dGroupArgs ga;
+			int li;
+			memset(&ga, 0, sizeof(ga));
+			ga.key_model = model;
+			ga.group = g;
+			ga.m2v = &renderer->state.matrix.model_to_view.m[0][0];
+			ga.v2s = &renderer->state.matrix.view_to_screen.m[0][0];
+			ga.pos = &model->groups[g].position[0].v[0];
+			ga.uv = &model->groups[g].map[0].v[0];
+			ga.nrm = &model->groups[g].normal[0].v[0];
+			ga.vcol = (const uint32_t*)model->groups[g].vertex_colours;
+			ga.fcol = (const uint32_t*)model->groups[g].face_colours;
+			ga.fv = &model->groups[g].vertex_numbers[0].v[0];
+			ga.eqn = &model->groups[g].eqn[0].v[0];
+			ga.nverts = model->groups[g].nvertices;
+			ga.nfaces = model->groups[g].nfaces;
+			ga.lighting = renderer->state.surface.lighting;
+			ga.colour_geometry = renderer->state.surface.colour_source == BRT_GEOMETRY;
+			ga.cull = renderer->state.cull.type == BRT_ONE_SIDED;
+			ga.ci_scale = renderer->state.cache.comp_scales[C_I];
+			ga.ci_off = renderer->state.cache.comp_offsets[C_I];
+			ga.cu_scale = renderer->state.cache.comp_scales[C_U];
+			ga.cu_off = renderer->state.cache.comp_offsets[C_U];
+			ga.cv_scale = renderer->state.cache.comp_scales[C_V];
+			ga.cv_off = renderer->state.cache.comp_offsets[C_V];
+			ga.ka = renderer->state.surface.ka;
+			ga.kd = renderer->state.surface.kd;
+			ga.ambient = scache.use_ambient_intensity ? ga.ka * scache.ambient_intensity : ga.ka;
+			/* directional lights: model space ones are rotated into view space */
+			for(li = 0; li < scache.nlights_model + scache.nlights_view && ga.nlights < T3DG_MAXLIGHTS; li++) {
+				struct active_light *al = &scache.lights[li];
+				float d[3], len;
+				if(al->type != BRT_DIRECT)
+					continue;
+				if(li < scache.nlights_model) {
+					const br_matrix34 *m = &renderer->state.matrix.model_to_view;
+					d[0] = al->direction.v[0]*m->m[0][0] + al->direction.v[1]*m->m[1][0] + al->direction.v[2]*m->m[2][0];
+					d[1] = al->direction.v[0]*m->m[0][1] + al->direction.v[1]*m->m[1][1] + al->direction.v[2]*m->m[2][1];
+					d[2] = al->direction.v[0]*m->m[0][2] + al->direction.v[1]*m->m[1][2] + al->direction.v[2]*m->m[2][2];
+				} else {
+					d[0] = al->direction.v[0]; d[1] = al->direction.v[1]; d[2] = al->direction.v[2];
+				}
+				len = sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+				if(len < 1e-6f)
+					continue;
+				ga.ldir[ga.nlights][0] = d[0]/len;
+				ga.ldir[ga.nlights][1] = d[1]/len;
+				ga.ldir[ga.nlights][2] = d[2]/len;
+				ga.lint[ga.nlights] = len * ga.kd;
+				ga.nlights++;
+			}
+			if(RdpT3dGroup(rend.block, &ga)) {
+				if(state)
+					RendererStateSave(renderer, state, BR_STATE_CACHE);
+				PrimitiveStateRenderEnd(renderer->state.pstate,rend.block);
+				continue;
+			}
 		}
 #endif
 		/*
