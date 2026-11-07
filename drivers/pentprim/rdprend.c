@@ -517,6 +517,13 @@ static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* 
                 N64_Rdp_UseTlut(L->lut);
                 mode = L->ia ? 4 : 3;
                 R.kavg = L->kavg;
+                {
+                    static int bl;
+                    if (bl < 16) {
+                        bl++;
+                        fprintf(stderr, "rdp blend: tex %dx%d -> %dx%d ia %d kavg %.2f mode %d\n", (int)pb->tex_wi, (int)pb->tex_hi, (int)R.tex_w, (int)R.tex_h, L->ia, (double)L->kavg, mode);
+                    }
+                }
             } else {
                 N64_Rdp_UseTlut(NULL);
             }
