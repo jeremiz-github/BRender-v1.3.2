@@ -582,6 +582,7 @@ static void RdpTriangleRenderImpl(brp_block* block, brp_vertex* v0, brp_vertex* 
 void BR_ASM_CALL RdpTriangleRender(brp_block* block, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2,
     br_uint_16* fp_vertices, br_uint_16* fp_edges, br_vector4* fp_eqn, struct temp_face* tfp) {
     OS_N64_ProfBegin(8);
+    { extern unsigned gN64_cnt[8]; gN64_cnt[2]++; }
     RdpTriangleRenderImpl(block, v0, v1, v2, fp_vertices, fp_edges, fp_eqn, tfp);
     OS_N64_ProfEnd(8);
 }

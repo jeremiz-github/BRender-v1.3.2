@@ -391,6 +391,7 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 	extern void OS_N64_ProfEnd(int);
 	br_error e;
 	OS_N64_ProfBegin(12);
+	{ extern unsigned gN64_cnt[8]; gN64_cnt[1]++; }
 	e = renderBeginSoft(self, rpb, block_changed, ranges_changed, no_render, prim_type);
 	if (e == BRE_OK && !no_render && gN64_use_rdp && self->cache.last_block != NULL) {
 		RdpSubstitute(self, (struct local_block *)self->cache.last_block, rpb);
@@ -583,6 +584,14 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 		    self->prim.perspective_type != BRT_SUBDIVIDE) {
 			    flags |= PRIMF_PERSPECTIVE;
 	    }
+#ifdef N64
+	    {
+		    /* the rear-view mirror is rendered by the CPU: make it perspective correct (no 'PlayStation' warping) */
+		    extern int gRendering_mirror;
+		    if(gRendering_mirror)
+			    flags |= PRIMF_PERSPECTIVE;
+	    }
+#endif
 
 	    /*
 	     * Pick a primitives array based on colour buffer type and primitive

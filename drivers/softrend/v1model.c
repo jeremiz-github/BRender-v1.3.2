@@ -1001,6 +1001,7 @@ br_error BR_CMETHOD_DECL(br_geometry_v1_model_soft, render)
 	extern void OS_N64_ProfBegin(int);
 	extern void OS_N64_ProfEnd(int);
 	OS_N64_ProfBegin(11);
+	{ extern unsigned gN64_cnt[8]; gN64_cnt[0]++; }
 #endif
 
 	r = V1Model_Render(self, renderer, model, default_state, type, BR_FALSE);
