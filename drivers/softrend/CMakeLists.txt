@@ -73,5 +73,5 @@ set_target_properties(softrend PROPERTIES
 add_library(BRender::Drivers::SoftRend ALIAS softrend)
 
 if(N64)
-    target_compile_options(softrend PRIVATE -O2)
+    target_compile_options(softrend PRIVATE -O2 -fsingle-precision-constant)
 endif()
