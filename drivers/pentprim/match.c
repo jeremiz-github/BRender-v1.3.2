@@ -1,3 +1,4 @@
+#include <stdio.h>
 /*
  * Copyright (c) 1993-1995 Argonaut Technologies Limited. All rights reserved.
  *
@@ -699,6 +700,18 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 	    }
 	}
 
+#ifdef N64
+	{
+		extern int gRendering_mirror;
+		static int mlogs;
+		if(gRendering_mirror && mlogs < 24) {
+			mlogs++;
+			fprintf(stderr, "mirror match: flags %x -> '%s' mask %x cmp %x tex %d%s\n", (unsigned)flags,
+				pb->p.identifier ? pb->p.identifier : "?", (unsigned)pb->flags_mask, (unsigned)pb->flags_cmp,
+				(int)work.texture.type, b >= nb ? " (DEFAULT, no match)" : "");
+		}
+	}
+#endif
 	/*
 	 * Copy buffer info if neccesary
 	 */
