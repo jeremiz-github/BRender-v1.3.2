@@ -991,6 +991,12 @@ static br_error V1Model_Render
 			ga.cu_off = renderer->state.cache.comp_offsets[C_U];
 			ga.cv_scale = renderer->state.cache.comp_scales[C_V];
 			ga.cv_off = renderer->state.cache.comp_offsets[C_V];
+			ga.sx_scale = renderer->state.cache.comp_scales[C_SX];
+			ga.sx_off = renderer->state.cache.comp_offsets[C_SX];
+			ga.sy_scale = renderer->state.cache.comp_scales[C_SY];
+			ga.sy_off = renderer->state.cache.comp_offsets[C_SY];
+			ga.sz_scale = renderer->state.cache.comp_scales[C_SZ];
+			ga.sz_off = renderer->state.cache.comp_offsets[C_SZ];
 			ga.ka = renderer->state.surface.ka;
 			ga.kd = renderer->state.surface.kd;
 			ga.ambient = scache.use_ambient_intensity ? ga.ka * scache.ambient_intensity : ga.ka;

@@ -734,4 +734,16 @@ void RdpFlush(void) {
     R.scene_rejected = 0;
 }
 
+/* Tiny3D (RSP geometry) path: not implemented yet. Option off, group never taken over -> normal pipeline. */
+#include "../softrend/rdp_t3d.h"
+int gN64_use_t3d = 0;
+int RdpT3dGroup(const void* block, const T3dGroupArgs* a) {
+    (void)block;
+    (void)a;
+    return 0;
+}
+void RdpT3dInvalidate(const void* v11model) {
+    (void)v11model;
+}
+
 #endif /* N64 */

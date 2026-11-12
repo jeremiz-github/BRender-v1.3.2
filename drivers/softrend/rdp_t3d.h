@@ -28,6 +28,7 @@ typedef struct {
     int cull;                  /* 1: one sided (cull back faces), 0: both */
     float ci_scale, ci_off;    /* comp_scales/offsets[C_I] */
     float cu_scale, cu_off, cv_scale, cv_off; /* comp_scales/offsets[C_U], [C_V] */
+    float sx_scale, sx_off, sy_scale, sy_off, sz_scale, sz_off; /* comp_scales/offsets[C_SX,C_SY,C_SZ] */
     float ka, kd;
     float ambient;             /* ka * ambient light intensity */
     int nlights;               /* directional lights, view space, unit direction + intensity (already * kd) */
