@@ -14,7 +14,14 @@
 #include <math.h>
 #include <string.h>
 #include "rdp_t3d.h"
+#ifdef N64
+#include <stdio.h>
+#endif
 extern int gN64_use_t3d;
+#ifdef N64
+extern unsigned OS_N64_Ticks(void);
+unsigned gMC_setup, gMC_geom, gMC_end, gMC_groups;
+#endif
 #endif
 #include "shortcut.h"
 #include "brassert.h"
@@ -885,6 +892,10 @@ static br_error V1Model_Render
 		rend.nvertices = model->groups[g].nvertices;
 		rend.nedges = model->groups[g].nedges;
 
+#ifdef N64
+		unsigned mc_t0 = OS_N64_Ticks(), mc_t1;
+		gMC_groups++;
+#endif
 		/*
 	 	 * Restore state for group
 		 */
@@ -1031,6 +1042,9 @@ static br_error V1Model_Render
 			}
 		}
 #endif
+#ifdef N64
+		mc_t1 = OS_N64_Ticks(); gMC_setup += mc_t1 - mc_t0;
+#endif
 		/*
 		 * Invoke the current set of renderer functions on the group
 		 */
@@ -1052,6 +1066,9 @@ static br_error V1Model_Render
 		 * Finish with primitives
 		 */
 		PrimitiveStateRenderEnd(renderer->state.pstate,rend.block);
+#ifdef N64
+		gMC_geom += OS_N64_Ticks() - mc_t1;
+#endif
 	}
 
 	/*
@@ -1076,10 +1093,42 @@ br_error BR_CMETHOD_DECL(br_geometry_v1_model_soft, render)
 	OS_N64_ProfBegin(11);
 	{ extern unsigned gN64_cnt[8]; gN64_cnt[0]++; }
 #endif
+#ifdef N64
+	extern unsigned OS_N64_Ticks(void);
+	unsigned mp_t0 = OS_N64_Ticks();
+	extern int gN64_rdp_tris;
+	int mp_tr0 = gN64_rdp_tris;
+#endif
 
 	r = V1Model_Render(self, renderer, model, default_state, type, BR_FALSE);
 #ifdef N64
 	OS_N64_ProfEnd(11);
+	{
+		/* diagnostic: per-model cost table, dumped every 1500 calls */
+		static struct { const void *m; unsigned ticks, calls, tris; int groups, faces; const char *name; } tb[96];
+		static int n, total;
+		unsigned dt = OS_N64_Ticks() - mp_t0;
+		int i;
+		for(i = 0; i < n && tb[i].m != model; i++) ;
+		if(i == n && n < 96) { tb[n].m = model; { int q, f = 0; for(q = 0; q < (int)model->ngroups; q++) f += model->groups[q].nfaces; tb[n].name = "model"; tb[n].groups = model->ngroups; tb[n].faces = f; } n++; }
+		if(i < n) { tb[i].ticks += dt; tb[i].calls++; tb[i].tris += gN64_rdp_tris - mp_tr0; }
+		if(++total >= 1500) {
+			int k, j;
+			unsigned all = 0;
+			for(k = 0; k < n; k++) all += tb[k].ticks;
+			for(j = 0; j < 12; j++) {
+				int best = -1;
+				for(k = 0; k < n; k++) if(tb[k].calls && (best < 0 || tb[k].ticks > tb[best].ticks)) best = k;
+				if(best < 0) break;
+				fprintf(stderr, "mc %p n%u g%d f%d t%u %uus tot%ums\n", tb[best].m, tb[best].calls, tb[best].groups, tb[best].faces, tb[best].tris / tb[best].calls,
+					tb[best].ticks / 47 / tb[best].calls, tb[best].ticks / 46875);
+				tb[best].calls = 0; tb[best].ticks = 0; tb[best].tris = 0;
+			}
+			fprintf(stderr, "mc all %ums %d calls %d models grp %u setup %ums geom %ums\n", all / 46875, total, n, gMC_groups, gMC_setup / 46875, gMC_geom / 46875); gMC_groups = gMC_setup = gMC_geom = 0;
+			for(k = 0; k < n; k++) { tb[k].ticks = 0; tb[k].calls = 0; }
+			total = 0;
+		}
+	}
 #endif
 
 	return r;

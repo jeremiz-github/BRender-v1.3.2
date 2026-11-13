@@ -32,7 +32,8 @@ extern float gN64_fog_z0, gN64_fog_k;
 #define SCR_H 240
 #define MAXB_VERTS 64              /* vertices per batch (Tiny3D cache holds 70) */
 #define NCACHE 1024   /* power of two: open-addressed hash table (used: 0 empty, 1 live, 2 tombstone) */
-#define BUDGET (256 * 1024)        /* bytes of cached vertex data (the 8 MB heap is full at race start: v31 ran out of memory with 1.25 MB) */
+extern int OS_N64_HeapHeadroom(void);
+#define BUDGET (192 * 1024)        /* bytes of cached vertex data (the 8 MB heap is full at race start: v31 ran out of memory with 1.25 MB) */
 #define NMAT 128
 
 typedef struct {
@@ -326,10 +327,11 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
         if (g->nbatches) {
             free_group_data(g);   /* texture / UV mapping changed: rebuild */
         }
-        if (cache_used_bytes > BUDGET || !build_group(g, d)) {
-            if (cache_used_bytes <= BUDGET) stat.bad_build++;
-            g->bad = 1;
-            if (cache_used_bytes > BUDGET) stat.fallback_budget++; else stat.fallback_bad++;
+        if (cache_used_bytes > BUDGET || OS_N64_HeapHeadroom() < 320 * 1024 || !build_group(g, d)) {
+            int over = cache_used_bytes > BUDGET || OS_N64_HeapHeadroom() < 320 * 1024;
+            if (!over) stat.bad_build++;
+            g->bad = over ? 0 : 1;   /* over budget / low heap: retry later instead of marking it bad for ever */
+            if (over) stat.fallback_budget++; else stat.fallback_bad++;
             return 0;
         }
     }
@@ -350,79 +352,117 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
 
     if (!N64_Rdp_T3dRect(&ox, &oy, &w, &h)) return 0;
 
-    /* ---- matrices ---- */
+    /* ---- matrices (cached: all groups of a model share the same inputs) ---- */
     {
-        const float* m = a->m2v;     /* 4 rows x 3 cols */
-        const float* s = a->v2s;     /* 4 x 4 */
-        int r, c;
-        for (r = 0; r < 4; r++)
-            for (c = 0; c < 4; c++) {
-                A[r][c] = (c < 3) ? m[r * 3 + c] : (r == 3 ? 1.0 : 0.0);
-                V[r][c] = s[r * 4 + c];
-            }
-        mul4(A, V, C);   /* row-vector convention: clip = [x y z 1] * C */
-        /* clip rows in column convention: Cc[j][i] = C[i][j] */
-        for (r = 0; r < 4; r++)
-            for (c = 0; c < 4; c++) Cc[r][c] = C[c][r];
-    }
-    {
-        double X[4][4], k;
-        int c;
-        /* x' = sx_scale/hw * cx + (sx_off + ox - 0.5 - hw)/hw * cw ... */
-        for (c = 0; c < 4; c++) {
-            X[0][c] = (a->sx_scale / hw) * Cc[0][c] + ((a->sx_off + ox - 0.5 - hw) / hw) * Cc[3][c];
-            X[1][c] = -((a->sy_scale / hh) * Cc[1][c] + ((a->sy_off + oy - 0.5 - hh) / hh) * Cc[3][c]);
-            X[2][c] = (a->sz_scale / 32767.0) * Cc[2][c] + (a->sz_off / 32767.0) * Cc[3][c];
-            X[3][c] = Cc[3][c];
-        }
-        k = 1.0 / g->S;       /* s16 position -> model units */
-        for (i = 0; i < 4; i++) { X[i][0] *= k; X[i][1] *= k; X[i][2] *= k; }
-        memcpy(Cc, X, sizeof(Cc));
-    }
-    /* near / far of the clip volume in w, for Tiny3D's w normalisation: ndc_z = -1 / +1 */
-    {
-        double m22 = a->v2s[2 * 4 + 2], m23 = a->v2s[2 * 4 + 3], m32 = a->v2s[3 * 4 + 2], m33 = a->v2s[3 * 4 + 3];
-        double zn, zf, wn, wf, ss = a->sz_scale, so = a->sz_off;
-        double tn = (-32767.0 - so) / ss, tf = (32767.0 - so) / ss;
-        zn = (tn * m33 - m32) / (m22 - tn * m23);
-        zf = (tf * m33 - m32) / (m22 - tf * m23);
-        wn = zn * m23 + m33;
-        wf = zf * m23 + m33;
-        if (wn > wf) { double t = wn; wn = wf; wf = t; }
-        if (!(wn > 1e-4)) wn = 1e-2;
-        if (!(wf > wn * 1.5)) wf = wn * 100.0;
-        near_w = (float)wn;
-        far_w = (float)wf;
-        {
-            T3DMat4* pm = &vp.matProj;
-            int r, c;
-            t3d_viewport_set_perspective(&vp, T3D_DEG_TO_RAD(60.0f), (float)SCR_W / SCR_H, near_w, far_w);
-            t3d_viewport_set_view_matrix(&vp, &(T3DMat4){ .m = { {1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1} } });
+        static struct {
+            int valid;
+            float in[12 + 16 + 6 + 3];
+            float mf[4][4];
+            float near_w, far_w, fog_n, fog_f;
+            int fog_en, bad, ox, oy;
+        } mc;
+        float key[12 + 16 + 6 + 3];
+        const float* m = a->m2v;
+        const float* s = a->v2s;
+        int r, c, same;
+        for (i = 0; i < 12; i++) key[i] = m[i];
+        for (i = 0; i < 16; i++) key[12 + i] = s[i];
+        key[28] = (float)a->sx_scale; key[29] = (float)a->sx_off; key[30] = (float)a->sy_scale;
+        key[31] = (float)a->sy_off;   key[32] = (float)a->sz_scale; key[33] = (float)a->sz_off;
+        key[34] = gN64_fog_on ? gN64_fog_z0 : -1.0f; key[35] = gN64_fog_k; key[36] = 0.0f;
+        same = mc.valid && memcmp(key, mc.in, sizeof(key)) == 0 && mc.ox == ox && mc.oy == oy;
+        /* S (s16 scale) differs per group: it is only a final scale of columns 0..2, so cache without it and apply it below */
+        if (!same) {
+            double Pd[4][4];
             for (r = 0; r < 4; r++)
-                for (c = 0; c < 4; c++) P[r][c] = pm->m[c][r];   /* T3DMat4 is column-major m[col][row] */
-        }
-        if (!inv4(P, Pi)) return 0;
-        mul4(Pi, Cc, M);
-        for (i = 0; i < 4; i++) {
-            int c;
-            for (c = 0; c < 4; c++) {
-                double v = M[i][c];
-                if (!(v == v) || v > 30000.0 || v < -30000.0) { g->bad = 1; stat.bad_mat++; stat.fallback_bad++; return 0; }
-                mf.m[c][i] = (float)v;
+                for (c = 0; c < 4; c++) {
+                    A[r][c] = (c < 3) ? m[r * 3 + c] : (r == 3 ? 1.0 : 0.0);
+                    V[r][c] = s[r * 4 + c];
+                }
+            mul4(A, V, C);   /* row-vector convention: clip = [x y z 1] * C */
+            for (r = 0; r < 4; r++)
+                for (c = 0; c < 4; c++) Cc[r][c] = C[c][r];
+            {
+                double X[4][4];
+                for (c = 0; c < 4; c++) {
+                    X[0][c] = (a->sx_scale / hw) * Cc[0][c] + ((a->sx_off + ox - 0.5 - hw) / hw) * Cc[3][c];
+                    X[1][c] = -((a->sy_scale / hh) * Cc[1][c] + ((a->sy_off + oy - 0.5 - hh) / hh) * Cc[3][c]);
+                    X[2][c] = (a->sz_scale / 32767.0) * Cc[2][c] + (a->sz_off / 32767.0) * Cc[3][c];
+                    X[3][c] = Cc[3][c];
+                }
+                memcpy(Cc, X, sizeof(Cc));
             }
-        }
-        if (gN64_fog_on && a->sz_scale != 0) {
-            double zs = gN64_fog_z0;
-            double ze = zs + (1.0001 - zs) / (gN64_fog_k > 0.01f ? gN64_fog_k : 0.01f);
-            double ts = ((zs * 65534.0 - 32767.0) - so) / ss, te = ((ze * 65534.0 - 32767.0) - so) / ss;
-            double zvs = (ts * m33 - m32) / (m22 - ts * m23), zve = (te * m33 - m32) / (m22 - te * m23);
-            double zcs = (2.0 * zs - 1.0) * (zvs * m23 + m33), zce = (2.0 * ze - 1.0) * (zve * m23 + m33);
-            double fa = -P[2][2], fb = P[2][3];   /* proj m22 / m32 (column-major: P[row][col]) */
-            if (fabs(fa) > 1e-9 && zce > zcs) {
-                fog_n = (float)((zcs - fb) / fa);
-                fog_f = (float)((zce - fb) / fa);
-                fog_en = fog_f > fog_n;
+            mc.fog_en = 0; mc.fog_n = 0; mc.fog_f = 1; mc.bad = 0;
+            {
+                double m22 = a->v2s[2 * 4 + 2], m23 = a->v2s[2 * 4 + 3], m32 = a->v2s[3 * 4 + 2], m33 = a->v2s[3 * 4 + 3];
+                double zn, zf, wn, wf, ss = a->sz_scale, so = a->sz_off;
+                double tn = (-32767.0 - so) / ss, tf = (32767.0 - so) / ss;
+                zn = (tn * m33 - m32) / (m22 - tn * m23);
+                zf = (tf * m33 - m32) / (m22 - tf * m23);
+                wn = zn * m23 + m33;
+                wf = zf * m23 + m33;
+                if (wn > wf) { double t = wn; wn = wf; wf = t; }
+                if (!(wn > 1e-4)) wn = 1e-2;
+                if (!(wf > wn * 1.5)) wf = wn * 100.0;
+                mc.near_w = (float)wn;
+                mc.far_w = (float)wf;
+                /* perspective + its inverse only change with near/far */
+                {
+                    static float pn = -1.0f, pf = -1.0f;
+                    static double Pk[4][4], Pik[4][4];
+                    static int pk_ok;
+                    if (!pk_ok || pn != mc.near_w || pf != mc.far_w) {
+                        T3DMat4* pm = &vp.matProj;
+                        t3d_viewport_set_perspective(&vp, T3D_DEG_TO_RAD(60.0f), (float)SCR_W / SCR_H, mc.near_w, mc.far_w);
+                        t3d_viewport_set_view_matrix(&vp, &(T3DMat4){ .m = { {1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1} } });
+                        for (r = 0; r < 4; r++)
+                            for (c = 0; c < 4; c++) Pk[r][c] = pm->m[c][r];   /* T3DMat4 is column-major m[col][row] */
+                        pk_ok = inv4(Pk, Pik);
+                        pn = mc.near_w; pf = mc.far_w;
+                    }
+                    if (!pk_ok) return 0;
+                    memcpy(P, Pk, sizeof(P));
+                    memcpy(Pi, Pik, sizeof(Pi));
+                }
+                memcpy(Pd, Cc, sizeof(Pd));
+                mul4(Pi, Cc, M);
+                for (i = 0; i < 4; i++)
+                    for (c = 0; c < 4; c++) {
+                        double v = M[i][c];
+                        if (!(v == v)) mc.bad = 1;
+                        mc.mf[c][i] = (float)v;
+                    }
+                if (gN64_fog_on && a->sz_scale != 0) {
+                    double zs = gN64_fog_z0;
+                    double ze = zs + (1.0001 - zs) / (gN64_fog_k > 0.01f ? gN64_fog_k : 0.01f);
+                    double ts = ((zs * 65534.0 - 32767.0) - so) / ss, te = ((ze * 65534.0 - 32767.0) - so) / ss;
+                    double zvs = (ts * m33 - m32) / (m22 - ts * m23), zve = (te * m33 - m32) / (m22 - te * m23);
+                    double zcs = (2.0 * zs - 1.0) * (zvs * m23 + m33), zce = (2.0 * ze - 1.0) * (zve * m23 + m33);
+                    double fa = -P[2][2], fb = P[2][3];
+                    if (fabs(fa) > 1e-9 && zce > zcs) {
+                        mc.fog_n = (float)((zcs - fb) / fa);
+                        mc.fog_f = (float)((zce - fb) / fa);
+                        mc.fog_en = mc.fog_f > mc.fog_n;
+                    }
+                }
             }
+            memcpy(mc.in, key, sizeof(key));
+            mc.ox = ox; mc.oy = oy;
+            mc.valid = 1;
+            (void)Pd;
+        }
+        near_w = mc.near_w; far_w = mc.far_w;
+        fog_n = mc.fog_n; fog_f = mc.fog_f; fog_en = mc.fog_en;
+        if (mc.bad) { g->bad = 1; stat.bad_mat++; stat.fallback_bad++; return 0; }
+        /* group-specific s16 scale: model units -> s16 means columns 0..2 of the model matrix are divided by S */
+        {
+            float k = 1.0f / g->S;
+            for (c = 0; c < 3; c++)
+                for (i = 0; i < 4; i++) mf.m[c][i] = mc.mf[c][i] * k;
+            for (i = 0; i < 4; i++) mf.m[3][i] = mc.mf[3][i];
+            for (c = 0; c < 4; c++)
+                for (i = 0; i < 4; i++)
+                    if (mf.m[c][i] > 30000.0f || mf.m[c][i] < -30000.0f) { g->bad = 1; stat.bad_mat++; stat.fallback_bad++; return 0; }
         }
     }
 
