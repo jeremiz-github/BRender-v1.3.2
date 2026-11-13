@@ -303,6 +303,8 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
     double A[4][4], V[4][4], C[4][4], P[4][4], Pi[4][4], Cc[4][4], M[4][4];
     double hw = SCR_W * 0.5, hh = SCR_H * 0.5;
     float near_w, far_w;
+    int fog_en = 0;
+    float fog_n = 0, fog_f = 1;
     unsigned sum = 0;
     T3DMat4FP* mfp;
     fm_mat4_t mf;
@@ -407,17 +409,21 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
             double zcs = (2.0 * zs - 1.0) * (zvs * m23 + m33), zce = (2.0 * ze - 1.0) * (zve * m23 + m33);
             double fa = -P[2][2], fb = P[2][3];   /* proj m22 / m32 (column-major: P[row][col]) */
             if (fabs(fa) > 1e-9 && zce > zcs) {
-                t3d_fog_set_range((float)((zcs - fb) / fa), (float)((zce - fb) / fa));
-                t3d_fog_set_enabled(true);
-            } else {
-                t3d_fog_set_enabled(false);
+                fog_n = (float)((zcs - fb) / fa);
+                fog_f = (float)((zce - fb) / fa);
+                fog_en = fog_f > fog_n;
             }
-        } else {
-            t3d_fog_set_enabled(false);
         }
     }
 
     t3d_viewport_attach(&vp);
+    /* fog needs the viewport attached */
+    if (fog_en) {
+        t3d_fog_set_range(fog_n, fog_f);
+        t3d_fog_set_enabled(true);
+    } else {
+        t3d_fog_set_enabled(false);
+    }
     /* t3d_viewport_attach() set the scissor to the whole viewport: put the scene rectangle back */
     {
         int x0 = ox < 0 ? 0 : ox, y0 = oy < 0 ? 0 : oy;
