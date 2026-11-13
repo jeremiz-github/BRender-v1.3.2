@@ -738,7 +738,17 @@ void RdpFlush(void) {
 #include "../softrend/rdp_t3d.h"
 int gN64_use_t3d = 0;
 
+extern void T3dCountReject(int why);
+static int RdpT3dGroupImpl(const void* block, const T3dGroupArgs* a);
 int RdpT3dGroup(const void* block, const T3dGroupArgs* a) {
+    int r;
+    OS_N64_ProfBegin(23);
+    r = RdpT3dGroupImpl(block, a);
+    OS_N64_ProfEnd(23);
+    return r;
+}
+
+static int RdpT3dGroupImpl(const void* block, const T3dGroupArgs* a) {
     static uint32_t rgba[8192];
     static int logs;
     const rdp_blk* pb = (const rdp_blk*)block;
@@ -747,18 +757,23 @@ int RdpT3dGroup(const void* block, const T3dGroupArgs* a) {
     float rs;
 
     if (!R.scene_open || pb < pool || pb >= pool + POOL) {
+        T3dCountReject(0);
         return 0;
     }
     if (pb->blend || pb->decal || pb->blend_tab != NULL || pb->mode > 1) {
+        T3dCountReject(1);
         return 0;
     }
     if (a->nverts < 3 || a->nverts > 8192 || a->nfaces < 1 || a->pos == NULL || a->fv == NULL || (pb->textured && a->uv == NULL)) {
+        T3dCountReject(2);
         return 0;
     }
     if (a->lighting && pb->has_i_const && !pb->has_i_vertex) {
-        return 0; /* per-face (flat) lighting: not expressible per vertex */
+        T3dCountReject(3); /* per-face (flat) lighting: not expressible per vertex */
+        return 0;
     }
     if (a->lighting && a->nrm == NULL) {
+        T3dCountReject(4);
         return 0;
     }
     /* same per-block setup as RdpTriangleRenderImpl */

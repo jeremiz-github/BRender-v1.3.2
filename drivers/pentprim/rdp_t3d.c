@@ -33,7 +33,7 @@ extern float gN64_fog_z0, gN64_fog_k;
 #define MAXB_VERTS 64              /* vertices per batch (Tiny3D cache holds 70) */
 #define NCACHE 192
 #define BUDGET (256 * 1024)        /* bytes of cached vertex data (the 8 MB heap is full at race start: v31 ran out of memory with 1.25 MB) */
-#define NMAT 512
+#define NMAT 128
 
 typedef struct {
     uint8_t nslots, ntris;
@@ -61,7 +61,8 @@ static int t3d_ready;
 static T3DViewport vp;
 static T3DMat4FP* mats;
 static int mat_next;
-static struct { int groups, tris, fallback_bad, fallback_budget, builds; } stat;
+static struct { int groups, tris, fallback_bad, fallback_budget, builds, bad_uv, bad_mat, bad_build, rej[8]; } stat;
+void T3dCountReject(int why) { stat.rej[why & 7]++; }
 
 int T3dInit(void) {
     if (t3d_ready) return 1;
@@ -169,7 +170,7 @@ static int build_group(t3d_group* g, const T3dDrawArgs* d) {
     }
     g->ubase = d->tex_w > 0 ? floorf(umin / d->tex_w) * d->tex_w : 0;
     g->vbase = d->tex_h > 0 ? floorf(vmin / d->tex_h) * d->tex_h : 0;
-    if (umax - g->ubase > 1000.0f || vmax - g->vbase > 1000.0f) return 0;   /* UVs hold +-1024 texels (s10.5) */
+    if (umax - g->ubase > 1000.0f || vmax - g->vbase > 1000.0f) { stat.bad_uv++; return 0; }   /* UVs hold +-1024 texels (s10.5) */
     /* model units -> s16, capped so the matrix entries stay small (Tiny3D matrices are s15.16) */
     g->S = 30000.0f / maxabs;
     if (g->S > 256.0f) g->S = 256.0f;
@@ -204,11 +205,11 @@ static int build_group(t3d_group* g, const T3dDrawArgs* d) {
                 memset(B, 0, sizeof(*B));
                 B->nslots = ns;
                 B->ntris = cur_t;
-                B->vb = malloc_uncached_aligned(16, sizeof(T3DVertPacked) * ((ns + 1) / 2 + 1));
+                B->vb = malloc_uncached_aligned(16, sizeof(T3DVertPacked) * ((ns + 1) / 2));
                 B->src = malloc(ns * sizeof(uint16_t));
                 B->tri = malloc(cur_t * 3);
                 if (!B->vb || !B->src || !B->tri) goto fail;
-                bytes += sizeof(T3DVertPacked) * ((ns + 1) / 2 + 1) + ns * 2 + cur_t * 3 + (int)sizeof(t3d_batch);
+                bytes += sizeof(T3DVertPacked) * ((ns + 1) / 2) + ns * 2 + cur_t * 3 + (int)sizeof(t3d_batch);
                 memcpy(B->src, cur_src, ns * sizeof(uint16_t));
                 memcpy(B->tri, cur_tri, cur_t * 3);
                 for (i = 0; i < ns; i++) {
@@ -318,6 +319,7 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
             free_group_data(g);   /* texture / UV mapping changed: rebuild */
         }
         if (cache_used_bytes > BUDGET || !build_group(g, d)) {
+            if (cache_used_bytes <= BUDGET) stat.bad_build++;
             g->bad = 1;
             if (cache_used_bytes > BUDGET) stat.fallback_budget++; else stat.fallback_bad++;
             return 0;
@@ -397,7 +399,7 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
             int c;
             for (c = 0; c < 4; c++) {
                 double v = M[i][c];
-                if (!(v == v) || v > 30000.0 || v < -30000.0) { g->bad = 1; stat.fallback_bad++; return 0; }
+                if (!(v == v) || v > 30000.0 || v < -30000.0) { g->bad = 1; stat.bad_mat++; stat.fallback_bad++; return 0; }
                 mf.m[c][i] = (float)v;
             }
         }
@@ -460,9 +462,11 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
 #endif
 
 #ifdef N64
-void T3dStats(int out[6]) {
+void T3dStats(int out[20]) {
     out[0] = stat.groups; out[1] = stat.tris; out[2] = stat.builds; out[3] = stat.fallback_bad; out[4] = stat.fallback_budget;
     out[5] = cache_used_bytes / 1024;
+    out[6] = stat.bad_uv; out[7] = stat.bad_mat; out[8] = stat.bad_build;
+    { int i; for (i = 0; i < 8; i++) { out[9 + i] = stat.rej[i]; stat.rej[i] = 0; } }
     stat.groups = stat.tris = 0;
 }
 #endif
