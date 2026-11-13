@@ -32,7 +32,7 @@ extern float gN64_fog_z0, gN64_fog_k;
 #define SCR_H 240
 #define MAXB_VERTS 64              /* vertices per batch (Tiny3D cache holds 70) */
 #define NCACHE 192
-#define BUDGET (1280 * 1024)       /* bytes of cached vertex data */
+#define BUDGET (256 * 1024)        /* bytes of cached vertex data (the 8 MB heap is full at race start: v31 ran out of memory with 1.25 MB) */
 #define NMAT 512
 
 typedef struct {
@@ -456,5 +456,13 @@ int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba) {
                 stat.builds, stat.fallback_bad, stat.fallback_budget, cache_used_bytes / 1024);
     }
     return 1;
+}
+#endif
+
+#ifdef N64
+void T3dStats(int out[6]) {
+    out[0] = stat.groups; out[1] = stat.tris; out[2] = stat.builds; out[3] = stat.fallback_bad; out[4] = stat.fallback_budget;
+    out[5] = cache_used_bytes / 1024;
+    stat.groups = stat.tris = 0;
 }
 #endif
