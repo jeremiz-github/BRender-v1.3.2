@@ -185,5 +185,6 @@ endif()
 add_library(BRender::Drivers::SoftPrim ALIAS pentprim)
 
 if(N64)
+    target_sources(pentprim PRIVATE rdp_t3d.c)
     target_compile_options(pentprim PRIVATE -O2 -fsingle-precision-constant)
 endif()

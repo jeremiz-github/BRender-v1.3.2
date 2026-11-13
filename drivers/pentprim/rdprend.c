@@ -734,16 +734,138 @@ void RdpFlush(void) {
     R.scene_rejected = 0;
 }
 
-/* Tiny3D (RSP geometry) path: not implemented yet. Option off, group never taken over -> normal pipeline. */
+/* ---- Tiny3D (RSP geometry) path: material + per-vertex colours here, batches/matrices in rdp_t3d.c ---- */
 #include "../softrend/rdp_t3d.h"
 int gN64_use_t3d = 0;
+
 int RdpT3dGroup(const void* block, const T3dGroupArgs* a) {
-    (void)block;
-    (void)a;
-    return 0;
-}
-void RdpT3dInvalidate(const void* v11model) {
-    (void)v11model;
+    static uint32_t rgba[8192];
+    static int logs;
+    const rdp_blk* pb = (const rdp_blk*)block;
+    T3dDrawArgs d;
+    int i, j;
+    float rs;
+
+    if (!R.scene_open || pb < pool || pb >= pool + POOL) {
+        return 0;
+    }
+    if (pb->blend || pb->decal || pb->blend_tab != NULL || pb->mode > 1) {
+        return 0;
+    }
+    if (a->nverts < 3 || a->nverts > 8192 || a->nfaces < 1 || a->pos == NULL || a->fv == NULL || (pb->textured && a->uv == NULL)) {
+        return 0;
+    }
+    if (a->lighting && pb->has_i_const && !pb->has_i_vertex) {
+        return 0; /* per-face (flat) lighting: not expressible per vertex */
+    }
+    if (a->lighting && a->nrm == NULL) {
+        return 0;
+    }
+    /* same per-block setup as RdpTriangleRenderImpl */
+    R.textured = pb->textured;
+    R.persp = pb->persp;
+    R.blend = 0;
+    R.decal = 0;
+    R.has_i_vertex = pb->has_i_vertex;
+    R.has_i_const = pb->has_i_const;
+    R.shade_h = pb->shade_h;
+    R.shade_table = pb->shade_table;
+    R.index_base = pb->index_base;
+    R.tex_w = pb->tex_w;
+    R.tex_h = pb->tex_h;
+    R.unscaled = pb->unscaled;
+    R.tex_ok = 1;
+
+    /* per-vertex colours (CPU, cheap: no transform) */
+    rs = sqrtf(a->m2v[0] * a->m2v[0] + a->m2v[1] * a->m2v[1] + a->m2v[2] * a->m2v[2]);
+    if (rs < 1e-6f) {
+        return 0;
+    }
+    rs = 1.0f / rs;
+    for (i = 0; i < a->nverts; i++) {
+        float ci = a->ci_off, lum = 1.0f, r, g, b;
+        if (a->lighting) {
+            const float* n = &a->nrm[i * 3];
+            float nx = (n[0] * a->m2v[0] + n[1] * a->m2v[3] + n[2] * a->m2v[6]) * rs;
+            float ny = (n[0] * a->m2v[1] + n[1] * a->m2v[4] + n[2] * a->m2v[7]) * rs;
+            float nz = (n[0] * a->m2v[2] + n[1] * a->m2v[5] + n[2] * a->m2v[8]) * rs;
+            float l = a->ambient;
+            for (j = 0; j < a->nlights; j++) {
+                float dt = nx * a->ldir[j][0] + ny * a->ldir[j][1] + nz * a->ldir[j][2];
+                if (dt > 0) {
+                    l += dt * a->lint[j];
+                }
+            }
+            ci = l >= 1.0f ? a->ci_off + a->ci_scale - 0.001f : (l <= 0 ? a->ci_off : a->ci_off + a->ci_scale * l);
+        } else if (a->vcol != NULL && a->colour_geometry) {
+            ci = a->ci_scale * (float)(a->vcol[i] >> 24) * (1.0f / 256.0f) + a->ci_off;
+        }
+        if (pb->textured) {
+            if (pb->has_i_vertex || pb->has_i_const) {
+                lum = shade_of(ci);
+            }
+            r = g = b = lum;
+        } else {
+            int idx;
+            if (R.shade_table != NULL && R.shade_h > 1 && (pb->has_i_vertex || pb->has_i_const)) {
+                int row = (int)ci;
+                if (row < 0) row = 0;
+                if (row >= R.shade_h) row = R.shade_h - 1;
+                idx = R.shade_table[row * 256 + (R.index_base & 255)];
+            } else {
+                idx = R.index_base & 255;
+            }
+            {
+                uint16_t c = N64_Rdp_PaletteEntry(idx);
+                r = (float)((c >> 11) & 31) * (1.0f / 31.0f);
+                g = (float)((c >> 6) & 31) * (1.0f / 31.0f);
+                b = (float)((c >> 1) & 31) * (1.0f / 31.0f);
+            }
+        }
+        if (r > 1) r = 1;
+        if (g > 1) g = 1;
+        if (b > 1) b = 1;
+        rgba[i] = ((uint32_t)(r * 255.0f + 0.5f) << 24) | ((uint32_t)(g * 255.0f + 0.5f) << 16) | ((uint32_t)(b * 255.0f + 0.5f) << 8) | 255u;
+    }
+
+    if (!T3dBegin()) {
+        return 0;
+    }
+    if (pb->textured) {
+        int ew = pb->tex_wi, eh = pb->tex_hi;
+        R.tex_ok = N64_Rdp_SetTexture(pb->tex_base, pb->tex_wi, pb->tex_hi, pb->tex_stride, &ew, &eh);
+        if (!R.tex_ok) {
+            return 0;
+        }
+        R.tex_w = (float)ew;
+        R.tex_h = (float)eh;
+        R.uk = ew / pb->tex_w;
+        R.vk = eh / pb->tex_h;
+    }
+    N64_Rdp_UseTlut(NULL);
+    N64_Rdp_SetMode(pb->mode);
+
+    memset(&d, 0, sizeof(d));
+    d.g = a;
+    d.textured = pb->textured;
+    d.tex_w = R.tex_w;
+    d.tex_h = R.tex_h;
+    if (pb->textured) {
+        float us = R.unscaled ? R.tex_w : R.uk, vs = R.unscaled ? R.tex_h : R.vk;
+        d.uk_s = a->cu_scale * us;
+        d.uk_o = a->cu_off * us;
+        d.vk_s = a->cv_scale * vs;
+        d.vk_o = a->cv_off * vs;
+    }
+    if (!T3dDraw(&d, rgba)) {
+        return 0;
+    }
+    if (logs < 6) {
+        logs++;
+        fprintf(stderr, "t3d group: model %p g%d verts %d faces %d tex %d lit %d lights %d mode %d\n", a->key_model, a->group, a->nverts,
+            a->nfaces, pb->textured, a->lighting, a->nlights, pb->mode);
+    }
+    return 1;
 }
 
 #endif /* N64 */

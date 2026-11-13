@@ -965,7 +965,7 @@ static br_error V1Model_Render
 		}
 #endif
 #ifdef N64
-		if(type == BRT_TRIANGLE && gN64_use_t3d && !on_screen) {
+		if(type == BRT_TRIANGLE && gN64_use_t3d) {
 			T3dGroupArgs ga;
 			int li;
 			memset(&ga, 0, sizeof(ga));

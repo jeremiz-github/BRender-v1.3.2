@@ -38,6 +38,16 @@ typedef struct {
 
 /* returns 1 when the group was drawn by Tiny3D, 0 when the caller must run its normal pipeline */
 int RdpT3dGroup(const void* block, const T3dGroupArgs* a);
+/* rdp_t3d.c (Tiny3D back-end) */
+typedef struct {
+    const T3dGroupArgs* g;
+    float uk_s, uk_o, vk_s, vk_o;   /* texel = u * uk_s + uk_o (raw BRender u incl. comp scale/offset) */
+    float tex_w, tex_h;
+    int textured;
+} T3dDrawArgs;
+int T3dInit(void);
+int T3dBegin(void);
+int T3dDraw(const T3dDrawArgs* d, const uint32_t* rgba);
 void RdpT3dInvalidate(const void* v11model);
 
 #endif
