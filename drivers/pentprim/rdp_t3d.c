@@ -31,7 +31,7 @@ extern float gN64_fog_z0, gN64_fog_k;
 #define SCR_W 320
 #define SCR_H 240
 #define MAXB_VERTS 64              /* vertices per batch (Tiny3D cache holds 70) */
-#define NCACHE 192
+#define NCACHE 1024   /* power of two: open-addressed hash table (used: 0 empty, 1 live, 2 tombstone) */
 #define BUDGET (256 * 1024)        /* bytes of cached vertex data (the 8 MB heap is full at race start: v31 ran out of memory with 1.25 MB) */
 #define NMAT 128
 
@@ -94,9 +94,10 @@ void RdpT3dInvalidate(const void* model) {
     int i;
     for (i = 0; i < NCACHE; i++) {
         t3d_group* g = &cache[i];
-        if (!g->used || g->model != model) continue;
+        if (g->used != 1 || g->model != model) continue;
         free_group_data(g);
         memset(g, 0, sizeof(*g));
+        g->used = 2;   /* tombstone keeps probe chains intact */
     }
 }
 
@@ -269,13 +270,20 @@ fail:
 }
 
 static t3d_group* find_group(const T3dDrawArgs* d) {
-    int i, freeslot = -1;
-    for (i = 0; i < NCACHE; i++) {
-        t3d_group* g = &cache[i];
-        if (g->used && g->model == d->g->key_model && g->group == d->g->group) return g;
-        if (!g->used && freeslot < 0) freeslot = i;
+    unsigned h = ((((unsigned)(uintptr_t)d->g->key_model) >> 4) * 2654435761u + (unsigned)d->g->group * 40503u) >> 7;
+    int n, freeslot = -1;
+    h &= (NCACHE - 1);
+    for (n = 0; n < NCACHE; n++, h = (h + 1) & (NCACHE - 1)) {
+        t3d_group* g = &cache[h];
+        if (g->used == 1) {
+            if (g->model == d->g->key_model && g->group == d->g->group) return g;
+        } else {
+            if (freeslot < 0) freeslot = (int)h;
+            if (g->used == 0) break;
+        }
     }
     if (freeslot < 0) return NULL;
+    memset(&cache[freeslot], 0, sizeof(cache[freeslot]));
     cache[freeslot].used = 1;
     cache[freeslot].model = d->g->key_model;
     cache[freeslot].group = d->g->group;
